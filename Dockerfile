@@ -9,19 +9,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install SDK first (better caching)
-COPY python-sdk/ /app/python-sdk/
-RUN pip install --no-cache-dir ./python-sdk psycopg2-binary
+# Copy project metadata first (better caching)
+COPY pyproject.toml README.md /app/
 
-# Copy runtime
-COPY synrix_runtime/ /app/synrix_runtime/
+# Copy source packages
+COPY octopoda/ /app/octopoda/
 COPY synrix/ /app/synrix/
+COPY synrix_runtime/ /app/synrix_runtime/
 
-# Install runtime deps
-RUN pip install --no-cache-dir fastapi uvicorn flask sentence-transformers numpy
+# Install the package with server + AI extras
+RUN pip install --no-cache-dir ".[server,ai]"
 
 # Expose API port
-EXPOSE 8000
+EXPOSE 8443
 
 # Environment
 ENV SYNRIX_BACKEND=postgres
