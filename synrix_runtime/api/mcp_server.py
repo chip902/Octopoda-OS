@@ -227,9 +227,15 @@ def _get_client():
         return _client
 
     api_key = (os.environ.get("OCTOPODA_API_KEY", "") or "").strip()
+    base_url = (os.environ.get("OCTOPODA_BASE_URL", "") or "").strip()
     local_mode_flag = (os.environ.get("OCTOPODA_LOCAL_MODE", "") or "").strip().lower() in ("1", "true", "yes", "on")
 
-    if local_mode_flag or api_key.lower() in _LOCAL_SENTINELS:
+    if base_url:
+        # Self-hosted mode — talk HTTP to a custom Octopoda server.
+        # api_key is optional (servers running with auth disabled accept any value).
+        _client = _FastClient(api_key or "local", base_url=base_url)
+        _local_mode = False
+    elif local_mode_flag or api_key.lower() in _LOCAL_SENTINELS:
         _client = _LocalClientAdapter()
         _local_mode = True
     elif not api_key.startswith("sk-octopoda-"):
@@ -1279,16 +1285,24 @@ def octopoda_status() -> dict:
 def main():
     """Run the MCP server (stdio transport).
 
-    Works in two modes:
-    - Cloud: set OCTOPODA_API_KEY to a real key (sk-octopoda-...)
-    - Local: leave OCTOPODA_API_KEY unset (or any non-real value) — uses local SQLite
+    Works in three modes:
+    - Self-hosted: set OCTOPODA_BASE_URL=http://your-host:port (talks HTTP to a self-hosted server)
+    - Cloud:       set OCTOPODA_API_KEY=sk-octopoda-... (talks HTTP to api.octopodas.com)
+    - Local:       leave both unset — uses local SQLite at ~/.synrix/data/synrix.db
     """
     import sys
     api_key = os.environ.get("OCTOPODA_API_KEY", "")
-    if not api_key:
-        print("Octopoda MCP starting in LOCAL mode (no OCTOPODA_API_KEY set).",
+    base_url = os.environ.get("OCTOPODA_BASE_URL", "")
+    if base_url:
+        print(f"Octopoda MCP starting in SELF-HOSTED mode (base={base_url}).",
+              file=sys.stderr)
+    elif api_key and api_key != "YOUR_KEY_HERE":
+        print("Octopoda MCP starting in CLOUD mode.", file=sys.stderr)
+    else:
+        print("Octopoda MCP starting in LOCAL mode (no OCTOPODA_BASE_URL or OCTOPODA_API_KEY set).",
               file=sys.stderr)
         print("Using SQLite at ~/.synrix/data/synrix.db", file=sys.stderr)
+        print("For self-hosted, set OCTOPODA_BASE_URL=http://host:port", file=sys.stderr)
         print("For cloud sync, set OCTOPODA_API_KEY=sk-octopoda-...", file=sys.stderr)
     mcp.run(transport="stdio")
 
