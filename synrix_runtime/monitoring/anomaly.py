@@ -11,6 +11,20 @@ from typing import Dict, List, Optional
 class AnomalyDetector:
     """Detects anomalies by comparing current metrics against baselines."""
 
+    # (agent_id, anomaly_type) -> last emission unix timestamp.
+    # Class-level so the dedup window survives the daemon's per-cycle
+    # re-instantiation of AnomalyDetector. Suppresses repeat alerts of
+    # the same type for the same agent within DEDUP_WINDOW_S seconds.
+    _last_emitted: Dict[str, float] = {}
+    DEDUP_WINDOW_S = 60.0
+
+    # agent_id -> last baseline write timestamp. Without this, agents that
+    # have no recent metrics samples cause check_for_anomalies() to call
+    # establish_baseline() every 5-second detection cycle, flooding the DB
+    # with runtime:baselines:* writes.
+    _last_baseline_write: Dict[str, float] = {}
+    BASELINE_MIN_INTERVAL_S = 300.0
+
     def __init__(self, backend=None):
         self.backend = backend
         if self.backend is None:
@@ -67,6 +81,14 @@ class AnomalyDetector:
         """Check for anomalies against baseline."""
         baseline = self._get_baseline(agent_id)
         if not baseline or baseline.get("sample_size", 0) == 0:
+            # Throttle baseline (re)establishment per agent. Without this, an
+            # agent with no recent metrics samples re-establishes its baseline
+            # on every 5s detection cycle, which writes runtime:baselines:*
+            # ~12 times/min/agent. The baseline doesn't move that fast.
+            last_attempt = self._last_baseline_write.get(agent_id, 0.0)
+            if time.time() - last_attempt < self.BASELINE_MIN_INTERVAL_S:
+                return []
+            self._last_baseline_write[agent_id] = time.time()
             self.establish_baseline(agent_id)
             baseline = self._get_baseline(agent_id)
             if not baseline:
@@ -167,16 +189,26 @@ class AnomalyDetector:
             }
             anomalies.append(anomaly)
 
-        # Write anomalies to Synrix
+        # Write anomalies to Synrix — dedup repeats of the same (agent, type)
+        # within DEDUP_WINDOW_S. Without this, info-severity alerts like
+        # idle_anomaly re-emit every detection cycle (5s) and flood the DB.
+        emitted = []
         for anomaly in anomalies:
+            atype = anomaly.get("type", "unknown")
+            dedup_key = f"{agent_id}:{atype}"
+            last = self._last_emitted.get(dedup_key, 0.0)
+            if now - last < self.DEDUP_WINDOW_S:
+                continue
+            self._last_emitted[dedup_key] = now
             ts = int(now * 1000000)
             self.backend.write(
                 f"alerts:{agent_id}:{ts}",
                 anomaly,
                 metadata={"type": "anomaly_alert"}
             )
+            emitted.append(anomaly)
 
-        return anomalies
+        return emitted
 
     def get_all_anomalies(self) -> list:
         """Get all anomalies across all agents."""
