@@ -20,6 +20,11 @@ COPY synrix_runtime/ /app/synrix_runtime/
 # Install the package with server + AI extras
 RUN pip install --no-cache-dir ".[server,ai]"
 
+# watchfiles (a uvicorn[standard] dep) can land with null-byte-corrupted .py
+# files under build pressure, which makes `import uvicorn` raise SyntaxError
+# and kills the Cloud API at startup. Force a clean reinstall as a guard.
+RUN pip install --force-reinstall --no-deps --no-cache-dir uvloop websockets watchfiles httptools python-dotenv
+
 # Expose API port
 EXPOSE 8443
 
