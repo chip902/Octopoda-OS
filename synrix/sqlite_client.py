@@ -113,6 +113,7 @@ class SynrixSQLiteClient:
         """Create tables and configure SQLite for performance."""
         with self._conn() as conn:
             conn.executescript("""
+                PRAGMA auto_vacuum=INCREMENTAL;
                 PRAGMA journal_mode=WAL;
                 PRAGMA synchronous=NORMAL;
                 PRAGMA cache_size=-8000;
@@ -287,6 +288,13 @@ class SynrixSQLiteClient:
     def _sync_fts(self, conn, node_id: int, name: str, data: str, collection: str):
         """Insert or update the FTS index for a node."""
         if not getattr(self, '_has_fts', False):
+            return
+        # Skip ephemeral telemetry: runtime:/metrics:/alerts: keys are read by
+        # exact name and never full-text searched. FTS-indexing them on every
+        # heartbeat (~3 writes/sec/agent) was the dominant write-amplification
+        # source, churning the FTS5 index + WAL on a 480MB DB. Excluding them
+        # keeps nodes_fts to real memories only.
+        if name.startswith(("runtime:", "metrics:", "alerts:")):
             return
         try:
             # Remove any existing entry with this rowid
