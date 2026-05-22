@@ -3,6 +3,7 @@ Synrix Agent Runtime — Heartbeat Manager
 Per-agent heartbeat thread that writes to Synrix.
 """
 
+import os
 import time
 import threading
 from typing import Optional
@@ -22,8 +23,12 @@ class HeartbeatManager:
         self._running = {}
         self._lock = threading.Lock()
 
-    def start_heartbeat(self, agent_id: str, interval: float = 5.0):
+    def start_heartbeat(self, agent_id: str, interval: Optional[float] = None):
         """Start a heartbeat thread for an agent."""
+        if interval is None:
+            # Default 30s (was 5s). Heartbeats are pure liveness telemetry;
+            # 5s × N agents × (heartbeat + last_active) was a needless write rate.
+            interval = float(os.getenv("SYNRIX_HEARTBEAT_INTERVAL", "30"))
         with self._lock:
             if agent_id in self._running and self._running[agent_id]:
                 return
