@@ -57,7 +57,9 @@ archive/
 checkpoint/
 python-sdk/
 website/
-scripts/
+# scripts/ ops tooling (Mini healthcheck + cleanup) IS tracked to stop drift;
+# ignore only local backups so they don't pollute history.
+scripts/*.bak*
 .claude/
 LOVABLE-*.md
 
