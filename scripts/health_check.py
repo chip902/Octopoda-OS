@@ -21,8 +21,11 @@ CONTAINER = "octopoda-os-api-1"
 # while the service was healthy. DB bloat is covered separately by check_db_size.
 API_URL = "http://localhost:8443/health"
 
-WARN_DB_MB = 800
-CRIT_DB_MB = 1500
+# Baseline after the 2026-06-11 reclaim is ~258MB (real data + snapshot FTS),
+# down from a 585MB telemetry death-spiral. Thresholds sit above baseline with
+# headroom to catch a regression toward unbounded growth (was 800/1500).
+WARN_DB_MB = 400
+CRIT_DB_MB = 600
 WARN_GC_S = 30
 CRIT_GC_S = 60
 WARN_LOAD = 8.0

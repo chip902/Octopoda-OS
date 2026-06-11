@@ -22,9 +22,9 @@ import sys
 import time
 
 DB = "/data/synrix.db"
-RETAIN_HOURS = 4
-SIZE_WARN_MB = 600
-SIZE_CRIT_MB = 1200
+RETAIN_HOURS = 2
+SIZE_WARN_MB = 400
+SIZE_CRIT_MB = 600
 
 # Prefixes that are pure Octopoda telemetry — safe to delete past retention.
 TELEMETRY_PREFIXES = ("runtime:", "metrics:", "alerts:")

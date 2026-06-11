@@ -65,13 +65,13 @@ fi
 # Parse cleanup result + alert on warn/crit/error
 case "$RESULT" in
   *'"status": "crit"'*)
-    "$SCRIPT_DIR/telegram_alert.sh" "Octopoda DB over 1200MB crit threshold after cleanup: $RESULT" || true
+    "$SCRIPT_DIR/telegram_alert.sh" "Octopoda DB over 600MB crit threshold after cleanup: $RESULT" || true
     ;;
   *'"status": "error"'*)
     "$SCRIPT_DIR/telegram_alert.sh" "Octopoda cleanup FAILED: $RESULT" || true
     ;;
   *'"status": "warn"'*)
-    "$SCRIPT_DIR/telegram_alert.sh" "Octopoda DB above 600MB warn threshold: $RESULT" || true
+    "$SCRIPT_DIR/telegram_alert.sh" "Octopoda DB above 400MB warn threshold: $RESULT" || true
     ;;
 esac
 
