@@ -121,6 +121,14 @@ def api_client(tmp_dir, monkeypatch):
     except Exception:
         pass
     MetricsCollector._instance = None
+    # Clear the module-level response cache so a list/status result computed in
+    # one test doesn't bleed into the next (root cause of the historic
+    # "fixture singleton bleed" that got agent-listing tests skipped).
+    try:
+        from synrix_runtime.api import response_cache
+        response_cache.invalidate("")
+    except Exception:
+        pass
 
     daemon = RuntimeDaemon.get_instance()
     daemon.start()
@@ -128,8 +136,17 @@ def api_client(tmp_dir, monkeypatch):
     from synrix_runtime.config import SynrixConfig
     config = SynrixConfig.from_env()
 
+    from synrix_runtime.api import cloud_server as _cs
     from synrix_runtime.api.cloud_server import app, init_cloud_server, _agent_runtimes
     _agent_runtimes.clear()
+    # Reset the in-process rate limiters — their token buckets are module-level
+    # singletons that otherwise accumulate across the whole test session and
+    # eventually return 429, which looked like "fixture singleton bleed".
+    for _rl in ("_rate_limiter", "_agent_rate_limiter", "_auth_rate_limiter"):
+        try:
+            getattr(_cs, _rl)._buckets.clear()
+        except Exception:
+            pass
     init_cloud_server(daemon, config)
 
     from fastapi.testclient import TestClient

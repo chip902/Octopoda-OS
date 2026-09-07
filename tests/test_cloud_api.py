@@ -35,7 +35,6 @@ class TestAgentManagement:
         assert data["agent_id"] == "bot_1"
         assert data["status"] == "running"
 
-    @pytest.mark.skip(reason="fixture singleton bleed across tests; user-facing flow verified by scripts/integration/audit_verify_3_1_13.py")
     def test_list_agents(self, api_client):
         api_client.post("/v1/agents", json={"agent_id": "bot_list"})
         resp = api_client.get("/v1/agents")
@@ -43,7 +42,6 @@ class TestAgentManagement:
         data = resp.json()
         assert data["total"] >= 1
 
-    @pytest.mark.skip(reason="fixture singleton bleed across tests; user-facing flow verified by scripts/integration/audit_verify_3_1_13.py")
     def test_get_agent(self, api_client):
         api_client.post("/v1/agents", json={"agent_id": "bot_get"})
         resp = api_client.get("/v1/agents/bot_get")
@@ -55,7 +53,6 @@ class TestAgentManagement:
         resp = api_client.get("/v1/agents/nonexistent_agent")
         assert resp.status_code == 404
 
-    @pytest.mark.skip(reason="fixture singleton bleed across tests; user-facing flow verified by scripts/integration/audit_verify_3_1_13.py")
     def test_deregister_agent(self, api_client):
         api_client.post("/v1/agents", json={"agent_id": "bot_dereg"})
         resp = api_client.delete("/v1/agents/bot_dereg")

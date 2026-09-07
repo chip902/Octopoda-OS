@@ -125,6 +125,7 @@ class AnomalyDetector:
         if recent_latencies:
             recent_mean = sum(recent_latencies) / len(recent_latencies)
             threshold = mean_baseline + 3 * std_dev if std_dev > 0 else mean_baseline * 3
+            threshold = max(threshold, 1_000_000)  # floor: ignore ms-scale remote-write latency vs local-us baseline (only flag >=1s)
             if threshold > 0 and recent_mean > threshold:
                 anomaly = {
                     "agent_id": agent_id,

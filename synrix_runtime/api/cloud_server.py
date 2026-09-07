@@ -1614,12 +1614,18 @@ def list_agents(
 
 
 def _list_agents_compute(tenant_id, offset, limit, auth):
+    all_agents = []
     try:
         from synrix_runtime.api.tenant import TenantManager
         tm = TenantManager.get_instance()
-        all_agents = tm.get_tenant_agents(tenant_id)
+        all_agents = tm.get_tenant_agents(tenant_id) or []
     except Exception:
-        # Dev/test fallback: query agents from daemon backend
+        all_agents = []
+    if not all_agents:
+        # Registry empty: in self-hosted mode agents live in the daemon backend,
+        # which TenantManager's per-tenant backend doesn't see. Derive directly.
+        # (Fall through on empty, not just on exception — the per-tenant path
+        # returns [] cleanly, so an except-only fallback never fired here.)
         backend = _get_tenant_backend(auth)
         all_agents = _get_agents_from_backend(backend) if backend else []
     total = len(all_agents)
@@ -3074,19 +3080,27 @@ async def shared_write(space: str, req: SharedWriteRequest, auth=Depends(verify_
 
 
 def _get_tenant_backend(auth):
-    """Get the tenant-isolated backend for the current request.
+    """Get the backend for the current request.
 
-    In dev/test mode (SYNRIX_AUTH_DISABLED=1), falls back to the daemon's
-    backend so endpoints work without PostgreSQL / TenantManager.
+    In self-hosted / dev mode (SYNRIX_AUTH_DISABLED=1) agent data lives in the
+    daemon backend, NOT a per-tenant TenantManager backend, so return the daemon
+    backend directly — the same backend _get_runtime() uses in this mode.
+
+    Previously this consulted TenantManager first and only fell back to the
+    daemon on exception. But TenantManager.get_backend() returns a separate,
+    empty per-tenant backend *without raising*, so the fallback never fired and
+    enumeration endpoints (/v1/agents, /v1/status, /v1/license, SSE) reported
+    zero agents even though the daemon held registered agents and their memories.
     """
+    auth_disabled = os.environ.get("SYNRIX_AUTH_DISABLED", "").strip() == "1"
+    if auth_disabled and _daemon is not None and hasattr(_daemon, 'backend'):
+        return _daemon.backend
     tenant_id = _get_tenant_id(auth)
     try:
         from synrix_runtime.api.tenant import TenantManager
         return TenantManager.get_instance().get_backend(tenant_id)
     except Exception:
-        # Dev/test fallback: use daemon backend directly
-        auth_disabled = os.environ.get("SYNRIX_AUTH_DISABLED", "").strip() == "1"
-        if auth_disabled and _daemon and hasattr(_daemon, 'backend'):
+        if _daemon is not None and hasattr(_daemon, 'backend'):
             return _daemon.backend
         return None
 
