@@ -21,7 +21,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]" psycopg2-binary
-          pip install fastapi uvicorn flask sentence-transformers numpy pytest mcp
+          # mcp is pinned here too: this bare install bypasses the pyproject extra,
+          # so without the bound CI silently resolves mcp 2.x and every MCP test fails.
+          pip install fastapi uvicorn flask sentence-transformers numpy pytest "mcp<2"
 
       - name: Run core tests (SQLite — no DB needed)
         run: |
