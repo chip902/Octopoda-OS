@@ -36,6 +36,7 @@ def main() -> int:
         return 1
 
     start = time.time()
+    size_before = os.path.getsize(DB)
     try:
         con = sqlite3.connect(DB, timeout=10.0)
         cur = con.cursor()
@@ -55,6 +56,11 @@ def main() -> int:
             deleted_by_prefix[prefix.rstrip(":")] = cur.rowcount
 
         deleted = sum(deleted_by_prefix.values())
+        con.commit()
+
+        # auto_vacuum is INCREMENTAL, so deleted pages just sit on the freelist.
+        # Without this the file only ever grows, however many rows we delete.
+        con.execute("PRAGMA incremental_vacuum")
         con.commit()
 
         total_rows = cur.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
@@ -86,6 +92,8 @@ def main() -> int:
         "agents_rows_preserved": agents_rows,
         "telemetry_remaining": telemetry_remaining,
         "db_size_mb": round(size_mb, 1),
+        "db_size_before_mb": round(size_before / 1024 / 1024, 1),
+        "reclaimed_mb": round((size_before - os.path.getsize(DB)) / 1024 / 1024, 1),
         "elapsed_s": round(time.time() - start, 1),
         "retention_hours": RETAIN_HOURS,
     }))
