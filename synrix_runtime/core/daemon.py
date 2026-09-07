@@ -44,6 +44,8 @@ class RuntimeDaemon:
         self._boot_time = None
         self._total_ops = 0
         self._ops_lock = threading.Lock()
+        # Per-agent recovery attempts, so a permanently dead agent stops being retried.
+        self._recovery_attempts = {}
 
     def start(self):
         """Start the daemon — connect to Octopoda and launch all background threads."""
@@ -125,6 +127,8 @@ class RuntimeDaemon:
         self._update_agent_count()
 
         self._increment_ops(8)
+        # A real registration proves the agent is alive, so give it a clean slate.
+        self._recovery_attempts.pop(agent_id, None)
         self.emit_event("agent_registered", {"agent_id": agent_id, "agent_type": agent_type, "latency_us": latency_us})
 
         return {"agent_id": agent_id, "registered": True, "latency_us": latency_us}
@@ -141,6 +145,8 @@ class RuntimeDaemon:
         now = time.time()
         self.backend.write(f"runtime:agents:{agent_id}:heartbeat", {"value": now}, metadata={"type": "heartbeat"})
         self.backend.write(f"runtime:agents:{agent_id}:last_active", {"value": now}, metadata={"type": "timestamp"})
+        # Only the agent itself calls this, so a beat means it's alive again.
+        self._recovery_attempts.pop(agent_id, None)
         self._increment_ops(2)
 
     def get_agent_state(self, agent_id: str) -> Optional[str]:
@@ -220,8 +226,10 @@ class RuntimeDaemon:
         # Step 5: Write recovered state
         step5_start = time.perf_counter_ns()
         self.backend.write(f"runtime:agents:{agent_id}:state", {"value": "recovering"}, metadata={"type": "agent_state"})
-        self.backend.write(f"runtime:agents:{agent_id}:state", {"value": "running"}, metadata={"type": "agent_state"})
-        self.backend.write(f"runtime:agents:{agent_id}:heartbeat", {"value": time.time()}, metadata={"type": "heartbeat"})
+        # Rest at "recovered", NOT "running": this restores state for an agent to pick
+        # up, it does not prove one is there. Writing a heartbeat here forged liveness
+        # for dead agents and crash-looped them every ~13s (see _heartbeat_monitor_loop).
+        self.backend.write(f"runtime:agents:{agent_id}:state", {"value": "recovered"}, metadata={"type": "agent_state"})
         step5_us = (time.perf_counter_ns() - step5_start) / 1000
 
         total_us = (time.perf_counter_ns() - total_start) / 1000
@@ -362,7 +370,7 @@ class RuntimeDaemon:
                 now = time.time()
                 for agent in agents:
                     state = agent.get("state")
-                    if state in ("deregistered", "crashed", "recovering"):
+                    if state in ("deregistered", "crashed", "recovering", "recovered"):
                         continue
                     heartbeat = agent.get("heartbeat")
                     if isinstance(heartbeat, (int, float)) and (now - heartbeat) > 10:
@@ -423,10 +431,17 @@ class RuntimeDaemon:
         while self.running:
             try:
                 agents = self.get_all_agents()
+                max_attempts = int(os.getenv("SYNRIX_MAX_RECOVERY_ATTEMPTS", "3"))
                 for agent in agents:
                     if agent.get("state") == "crashed":
                         agent_id = agent.get("agent_id")
                         if agent_id:
+                            # Give up after N tries; otherwise a permanently dead agent
+                            # is retried every 5s forever and floods runtime:events.
+                            attempts = self._recovery_attempts.get(agent_id, 0)
+                            if attempts >= max_attempts:
+                                continue
+                            self._recovery_attempts[agent_id] = attempts + 1
                             try:
                                 self.recover_agent(agent_id)
                             except Exception as e:
