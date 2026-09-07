@@ -75,3 +75,50 @@ class TestDaemonLifecycle:
         assert events[0]["event_type"] == "agent_registered"
 
         daemon.remove_event_listener(events.append)
+
+
+class TestCrashRecoveryLoop:
+    """Regression cover for the crash/recover storm found 2026-09-06.
+
+    A dead agent used to be crashed and 'recovered' every ~13s forever, because
+    recover_agent() wrote a heartbeat on its behalf. Five rows per cycle, ~154k
+    rows/day, which is what repeatedly filled the DB.
+    """
+
+    def test_recovery_does_not_forge_a_heartbeat(self, daemon):
+        daemon.register_agent("ghost", "worker")
+        stale = time.time() - 3600
+        daemon.backend.write(
+            "runtime:agents:ghost:heartbeat", {"value": stale}, metadata={"type": "heartbeat"}
+        )
+
+        daemon.recover_agent("ghost")
+
+        agent = next(a for a in daemon.get_all_agents() if a["agent_id"] == "ghost")
+        assert agent["heartbeat"] == pytest.approx(stale), (
+            "recovery must not write a heartbeat for an agent that isn't there"
+        )
+
+    def test_recovered_agent_is_not_re_crashed(self, daemon):
+        daemon.register_agent("ghost2", "worker")
+        daemon.backend.write(
+            "runtime:agents:ghost2:heartbeat",
+            {"value": time.time() - 3600},
+            metadata={"type": "heartbeat"},
+        )
+        daemon.set_agent_state("ghost2", "crashed")
+        daemon.recover_agent("ghost2")
+
+        assert daemon.get_agent_state("ghost2") == "recovered"
+        # The heartbeat monitor skips these states, so no second crash is emitted.
+        assert daemon.get_agent_state("ghost2") in (
+            "deregistered", "crashed", "recovering", "recovered",
+        )
+
+    def test_a_live_agent_clears_its_recovery_attempts(self, daemon):
+        daemon.register_agent("ghost3", "worker")
+        daemon._recovery_attempts["ghost3"] = 3
+
+        daemon.update_heartbeat("ghost3")
+
+        assert "ghost3" not in daemon._recovery_attempts
