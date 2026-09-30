@@ -1,16 +1,5 @@
-"""Regression tests for the Brain pause deadlock seen on 2026-09-29.
-
-A legit 38-write backlog sync pushed an agent to orange, the v1->v2 wiring
-auto-paused it, and it stayed paused forever: the cached loop score never
-expired, the pause never expired, and a manual resume lasted one write.
-
-Covers the fixes plus guards on the behaviour that should not change:
-  1. cached loop detections expire once the agent is quiet, and the
-     auto-pause trips on the live score rather than the cached one
-  2. automatic pauses expire; manual and dashboard apply-fix pauses don't
-  3. SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS opts ingest agents out of auto-pause
-  4. resume and delete wipe the agent's loop history
-"""
+"""Regression tests for the Brain pause deadlock (2026-09-29): cached loop scores and automatic
+pauses now expire, and SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS lets ingest agents skip auto-pause."""
 from __future__ import annotations
 
 import importlib
