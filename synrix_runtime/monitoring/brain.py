@@ -23,6 +23,8 @@ import hashlib
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 
+from synrix_runtime.config import env_seconds
+
 logger = logging.getLogger("synrix.brain")
 
 
@@ -69,6 +71,12 @@ class LoopBreaker:
     WINDOW_SECONDS = 300  # 5-minute rolling window
     TRIGGER_COUNT = 3  # 3 similar writes = loop
     MAX_HISTORY = 30  # Keep last 30 entries per agent
+
+    # Only an operator's pause is forever. Anything automatic lapses so a
+    # false positive can't lock an agent out until the next restart.
+    MANUAL_PAUSE_REASON = "manual"
+    PAUSE_TTL_ENV = "SYNRIX_LOOP_PAUSE_TTL_SEC"
+    DEFAULT_PAUSE_TTL_SEC = 1800
 
     @classmethod
     def check(cls, tenant_id: str, agent_id: str, embedding, key: str,
@@ -167,9 +175,24 @@ class LoopBreaker:
 
     @classmethod
     def is_paused(cls, tenant_id: str, agent_id: str) -> bool:
+        """True while a pause holds. Automatic pauses lapse after the TTL; manual ones don't."""
         key = f"{tenant_id}:{agent_id}"
         with cls._lock:
-            return key in cls._paused_agents
+            pause = cls._paused_agents.get(key)
+            if pause is None:
+                return False
+            if not cls._pause_expired(pause):
+                return True
+            del cls._paused_agents[key]
+        logger.info("auto-pause on %s lapsed (reason=%s)", key, pause.get("reason"))
+        return False
+
+    @classmethod
+    def _pause_expired(cls, pause: dict) -> bool:
+        if pause.get("reason") == cls.MANUAL_PAUSE_REASON:
+            return False
+        ttl = env_seconds(cls.PAUSE_TTL_ENV, cls.DEFAULT_PAUSE_TTL_SEC)
+        return time.time() - pause.get("paused_at", 0) >= ttl
 
     @classmethod
     def resume_agent(cls, tenant_id: str, agent_id: str):

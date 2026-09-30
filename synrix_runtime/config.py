@@ -4,6 +4,8 @@ Synrix Runtime Configuration
 Production configuration loaded from environment variables.
 """
 
+import functools
+import logging
 import os
 from dataclasses import dataclass
 
@@ -127,3 +129,24 @@ class SynrixConfig:
             "lattice_path": self.get_lattice_path(),
             "use_mock": False,
         }
+
+
+def env_seconds(name: str, default: int) -> int:
+    """Read a whole-seconds setting from env at call time; unset or bad values give `default`."""
+    return _parse_seconds(name, os.environ.get(name, "").strip(), default)
+
+
+@functools.lru_cache(maxsize=64)
+def _parse_seconds(name: str, raw: str, default: int) -> int:
+    # Cached per raw value so a typo'd setting warns once, not on every write.
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0:
+        logging.getLogger("synrix.config").warning(
+            "%s=%r isn't a non-negative whole number of seconds, using %d", name, raw, default)
+        return default
+    return value

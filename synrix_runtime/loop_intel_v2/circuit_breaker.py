@@ -8,8 +8,8 @@ Architecture:
     in the last WINDOW_SEC seconds, grouped by agent_id
   - If an agent's spend rate exceeds its threshold, calls
     LoopBreaker.pause_agent + emits a notification + records pause_count
-  - Auto-resume is NOT done here — operator must explicitly resume after
-    fixing the underlying cause
+  - Nothing here resumes an agent. The pause lapses after SYNRIX_LOOP_PAUSE_TTL_SEC
+    (see LoopBreaker.is_paused), and the next check re-trips it if spend is still high
 
 This is best-effort safety. It does NOT replace per-call cost limits or
 proper agent code. It catches runaway loops before the bill arrives.

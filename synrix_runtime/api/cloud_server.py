@@ -4945,7 +4945,7 @@ async def brain_pause(agent_id: str, auth=Depends(verify_auth)):
     """Pause an agent (kill switch)."""
     tenant_id = _get_tenant_id(auth)
     from synrix_runtime.monitoring.brain import LoopBreaker
-    LoopBreaker.pause_agent(tenant_id, agent_id, reason="manual")
+    LoopBreaker.pause_agent(tenant_id, agent_id, reason=LoopBreaker.MANUAL_PAUSE_REASON)
     return {"agent_id": agent_id, "paused": True}
 
 
