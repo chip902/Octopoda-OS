@@ -9,21 +9,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy project metadata first (better caching)
-COPY pyproject.toml README.md /app/
+# CPU-only PyTorch: the default wheel drags in the CUDA stack (nvidia-*, triton),
+# which is gigabytes of dead weight on a host with no NVIDIA GPU.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
-# Copy source packages
-COPY octopoda/ /app/octopoda/
-COPY synrix/ /app/synrix/
-COPY synrix_runtime/ /app/synrix_runtime/
-
-# Install the package with server + AI extras
-RUN pip install --no-cache-dir ".[server,ai]"
+# Install the server + AI dependencies before copying source, so code edits reuse this layer.
+COPY pyproject.toml /app/
+RUN python -c "import tomllib; p = tomllib.load(open('pyproject.toml', 'rb'))['project']; x = p['optional-dependencies']; print('\n'.join(p['dependencies'] + x['server'] + x['ai']))" > /tmp/requirements.txt \
+    && pip install --no-cache-dir -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 
 # watchfiles (a uvicorn[standard] dep) can land with null-byte-corrupted .py
 # files under build pressure, which makes `import uvicorn` raise SyntaxError
 # and kills the Cloud API at startup. Force a clean reinstall as a guard.
 RUN pip install --force-reinstall --no-deps --no-cache-dir uvloop websockets watchfiles httptools python-dotenv
+
+# Copy project metadata and source packages
+COPY README.md /app/
+COPY octopoda/ /app/octopoda/
+COPY octopoda_zf/ /app/octopoda_zf/
+COPY synrix/ /app/synrix/
+COPY synrix_runtime/ /app/synrix_runtime/
+
+# Install the package itself; its dependencies are already in place
+RUN pip install --no-cache-dir --no-deps .
 
 # Expose API port
 EXPOSE 8443

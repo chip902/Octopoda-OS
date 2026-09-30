@@ -10,7 +10,12 @@ Quick start:
     result = agent.recall("key")
 """
 
-__version__ = "3.2.2"
+try:
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("octopoda")
+except Exception:  # pragma: no cover - source checkout without install metadata
+    from synrix import __version__ as __version__
 
 # Cloud SDK (the main developer-facing API)
 from synrix.cloud import Octopoda, Agent, OctopodaError, AuthError, RateLimitError
@@ -142,6 +147,28 @@ __all__ = [
     "SynrixAgentBackend",
     "Memory",
 ]
+
+
+# --- Zero-friction auto-instrumentation (3.3.0) ----------------------------
+# Lazy re-exports (PEP 562): `import octopoda; octopoda.init(api_key=...)`
+# auto-detects LangChain/CrewAI/AutoGen/OpenAI/Anthropic/MCP and wires memory
+# capture + recall injection. Lazy so plain `import octopoda` is unchanged for
+# existing SDK users (no extra import cost, no behavior change).
+_ZF_LAZY = {
+    "init": "octopoda_zf",
+    "uninstall": "octopoda_zf",
+    "InitResult": "octopoda_zf",
+    "audit_chain": "octopoda_zf",
+    "procedural": "octopoda_zf",
+}
+
+
+def __getattr__(name):
+    mod = _ZF_LAZY.get(name)
+    if mod is not None:
+        import importlib
+        return getattr(importlib.import_module(mod), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # v3.1.4: re-export modern LangChain integration (recommended over LangChainMemory)

@@ -46,6 +46,11 @@ class RuntimeDaemon:
         self._ops_lock = threading.Lock()
         # Per-agent recovery attempts, so a permanently dead agent stops being retried.
         self._recovery_attempts = {}
+        # Single-flight recovery: track agents whose recovery is in progress so
+        # the heartbeat monitor, watchdog, and cold-start path don't run
+        # concurrent, redundant recoveries for the same agent.
+        self._recovering = set()
+        self._recovering_lock = threading.Lock()
 
     def start(self):
         """Start the daemon — connect to Octopoda and launch all background threads."""
@@ -193,6 +198,24 @@ class RuntimeDaemon:
         return [a for a in self.get_all_agents() if a.get("state") != "deregistered"]
 
     def recover_agent(self, agent_id: str) -> dict:
+        """Recover a crashed agent — single-flight guarded.
+
+        The heartbeat monitor and the recovery watchdog (and cold-start) can all
+        observe the same crashed agent and fire recovery. Guard so only one
+        recovery per agent runs at a time; concurrent callers get a no-op skip
+        instead of duplicating the work.
+        """
+        with self._recovering_lock:
+            if agent_id in self._recovering:
+                return {"agent_id": agent_id, "skipped": "recovery_in_progress"}
+            self._recovering.add(agent_id)
+        try:
+            return self._recover_agent(agent_id)
+        finally:
+            with self._recovering_lock:
+                self._recovering.discard(agent_id)
+
+    def _recover_agent(self, agent_id: str) -> dict:
         """Recover a crashed agent — restore full state from Synrix."""
         total_start = time.perf_counter_ns()
 
@@ -219,16 +242,15 @@ class RuntimeDaemon:
             "snapshots": len(snapshots),
             "pending_tasks": len(agent_tasks),
             "memory": memory_keys,
-            "latest_snapshot": snapshots[-1] if snapshots else None,
+            "latest_snapshot": snapshots[0] if snapshots else None,
         }
         step4_us = (time.perf_counter_ns() - step4_start) / 1000
 
         # Step 5: Write recovered state
         step5_start = time.perf_counter_ns()
         self.backend.write(f"runtime:agents:{agent_id}:state", {"value": "recovering"}, metadata={"type": "agent_state"})
-        # Rest at "recovered", NOT "running": this restores state for an agent to pick
-        # up, it does not prove one is there. Writing a heartbeat here forged liveness
-        # for dead agents and crash-looped them every ~13s (see _heartbeat_monitor_loop).
+        # Rest at "recovered", not "running", and write no heartbeat: recovery restores state but
+        # can't prove the agent is alive, and a forged beat crash-looped dead agents every ~13s.
         self.backend.write(f"runtime:agents:{agent_id}:state", {"value": "recovered"}, metadata={"type": "agent_state"})
         step5_us = (time.perf_counter_ns() - step5_start) / 1000
 
