@@ -14,6 +14,7 @@ temporal versioning, audit trails) to provide intelligence that
 no other memory system offers.
 """
 
+import os
 import time
 import json
 import struct
@@ -77,6 +78,7 @@ class LoopBreaker:
     MANUAL_PAUSE_REASON = "manual"
     PAUSE_TTL_ENV = "SYNRIX_LOOP_PAUSE_TTL_SEC"
     DEFAULT_PAUSE_TTL_SEC = 1800
+    PAUSE_EXEMPT_ENV = "SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS"
 
     @classmethod
     def check(cls, tenant_id: str, agent_id: str, embedding, key: str,
@@ -193,6 +195,13 @@ class LoopBreaker:
             return False
         ttl = env_seconds(cls.PAUSE_TTL_ENV, cls.DEFAULT_PAUSE_TTL_SEC)
         return time.time() - pause.get("paused_at", 0) >= ttl
+
+    @classmethod
+    def is_auto_pause_exempt(cls, agent_id: str) -> bool:
+        """True if agent_id is in SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS (comma-separated).
+        Only automatic pause paths check this; loop status and manual pauses don't care."""
+        listed = {a.strip() for a in os.environ.get(cls.PAUSE_EXEMPT_ENV, "").split(",")}
+        return bool(agent_id) and agent_id in listed
 
     @classmethod
     def resume_agent(cls, tenant_id: str, agent_id: str):

@@ -4,15 +4,17 @@ A legit 38-write backlog sync pushed an agent to orange, the v1->v2 wiring
 auto-paused it, and it stayed paused forever: the cached loop score never
 expired, the pause never expired, and a manual resume lasted one write.
 
-Covers two fixes plus guards on the behaviour that should not change:
+Covers three fixes plus guards on the behaviour that should not change:
   1. cached loop detections expire once the agent is quiet
   2. automatic (non-manual) pauses expire
+  3. SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS opts ingest agents out of auto-pause
 """
 from __future__ import annotations
 
 import time as _real_time
 import uuid
 from concurrent.futures import Future
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -173,6 +175,67 @@ def test_manual_pause_never_expires(clock, agent_id):
 
 
 # ---------------------------------------------------------------------------
+# 3. Ingest agents can opt out of automatic pauses
+# ---------------------------------------------------------------------------
+
+def test_exempt_agent_is_not_paused_by_v1_severity_trip(agent_id, monkeypatch):
+    from synrix_runtime.loop_intel_v2 import circuit_breaker as cb
+    monkeypatch.setenv("SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS", f"other, {agent_id}")
+    conn = MagicMock()
+
+    result = cb.trip_on_v1_severity(conn, "t1", agent_id, severity="red", score=10)
+
+    assert result is None
+    assert LoopBreaker.is_paused("t1", agent_id) is False
+    conn.cursor.return_value.execute.assert_not_called()
+
+
+def test_non_exempt_agent_still_paused_by_v1_severity_trip(agent_id, monkeypatch):
+    from synrix_runtime.loop_intel_v2 import circuit_breaker as cb
+    monkeypatch.setenv("SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS", "some-ingest-agent")
+
+    result = cb.trip_on_v1_severity(MagicMock(), "t1", agent_id, severity="red", score=10)
+
+    assert result["paused"] is True
+    assert LoopBreaker.is_paused("t1", agent_id) is True
+
+
+def test_cost_breaker_skips_exempt_agent_but_pauses_others(monkeypatch):
+    from synrix_runtime.loop_intel_v2 import circuit_breaker as cb
+    ingest, worker = f"ingest-{uuid.uuid4().hex[:8]}", f"worker-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setenv("SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS", ingest)
+    monkeypatch.setattr(cb, "compute_recent_spend", lambda conn, tid: {ingest: 5.0, worker: 5.0})
+    monkeypatch.setattr(cb, "_resolve_threshold", lambda cur, tid, aid: (0.5, None, 1))
+    try:
+        actions = cb.check_tenant(MagicMock(), "t1")
+
+        assert [a["agent_id"] for a in actions] == [worker]
+        assert LoopBreaker.is_paused("t1", ingest) is False
+        assert LoopBreaker.is_paused("t1", worker) is True
+    finally:
+        _forget_agent(ingest)
+        _forget_agent(worker)
+
+
+def test_manual_pause_still_works_on_exempt_agent(agent_id, monkeypatch):
+    monkeypatch.setenv("SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS", agent_id)
+
+    LoopBreaker.pause_agent("t1", agent_id, reason="manual")
+
+    assert LoopBreaker.is_paused("t1", agent_id) is True
+
+
+def test_exempt_agent_still_reports_loop_status(loop_agent, monkeypatch):
+    monkeypatch.setenv("SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS", loop_agent.agent_id)
+    _burst(loop_agent)
+
+    status = loop_agent.get_loop_status()
+
+    assert status["severity"] in ("orange", "red")
+    assert {s["type"] for s in status["signals"]} >= {"key_overwrite", "velocity_spike"}
+
+
+# ---------------------------------------------------------------------------
 # End to end through POST /remember (the path that deadlocked live)
 # ---------------------------------------------------------------------------
 
@@ -218,3 +281,12 @@ def test_api_auto_paused_agent_can_write_again_after_ttl(api, clock, agent_id):
     assert first.status_code == 200
     assert second.status_code == 200, "stale cached loop re-paused the agent"
 
+
+def test_api_exempt_agent_is_never_auto_paused(api, agent_id, monkeypatch):
+    monkeypatch.setenv("SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS", agent_id)
+
+    codes = _post_until_paused(api, agent_id)
+    status = api.get(f"/v1/agents/{agent_id}/loops/status").json()
+
+    assert 429 not in codes
+    assert status["severity"] in ("orange", "red")

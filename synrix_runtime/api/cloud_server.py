@@ -2071,6 +2071,9 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
             sev = status.get("severity")
             if sev not in ("orange", "red"):
                 return
+            from synrix_runtime.monitoring.brain import LoopBreaker
+            if LoopBreaker.is_auto_pause_exempt(agent_id):
+                return  # ingest agent opted out; its loop status still reports
             signals = status.get("signals") or []
             from synrix_runtime.loop_intel_v2 import circuit_breaker as _cb
             from synrix_runtime.loop_intel_v2.api import _get_connection as _conn_fn
@@ -2079,7 +2082,6 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
             except Exception:
                 # No DB available (e.g. local-mode without Postgres) —
                 # still pause the agent in-process, just skip the v2 row update.
-                from synrix_runtime.monitoring.brain import LoopBreaker
                 LoopBreaker.pause_agent(
                     tenant_id, agent_id,
                     reason=f"v1_severity:{sev}:signals={len(signals)}",

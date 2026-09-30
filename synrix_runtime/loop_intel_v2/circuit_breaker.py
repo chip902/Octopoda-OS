@@ -193,10 +193,10 @@ def trip_on_v1_severity(conn, tenant_id: str, agent_id: str, severity: str,
 
     cur = conn.cursor()
 
-    # Already paused? Idempotent — don't double-increment.
+    # Already paused (don't double-count) or an opted-out ingest agent: no pause, no counter bump.
     try:
         from synrix_runtime.monitoring.brain import LoopBreaker
-        if LoopBreaker.is_paused(tenant_id, agent_id):
+        if LoopBreaker.is_paused(tenant_id, agent_id) or LoopBreaker.is_auto_pause_exempt(agent_id):
             return None
     except Exception:
         pass
@@ -296,8 +296,12 @@ def check_tenant(conn, tenant_id: str) -> List[Dict[str, object]]:
     if not spend_by_agent:
         return actions
 
+    from synrix_runtime.monitoring.brain import LoopBreaker
+
     cur = conn.cursor()
     for agent_id, spend in spend_by_agent.items():
+        if LoopBreaker.is_auto_pause_exempt(agent_id):
+            continue
         resolved = _resolve_threshold(cur, tenant_id, agent_id)
         if resolved is None:
             continue
@@ -309,7 +313,6 @@ def check_tenant(conn, tenant_id: str) -> List[Dict[str, object]]:
 
         # Trip!
         try:
-            from synrix_runtime.monitoring.brain import LoopBreaker
             LoopBreaker.pause_agent(
                 tenant_id, agent_id,
                 reason=f"circuit_breaker:spend=${spend:.4f}/{WINDOW_SEC}s>{threshold_usd_per_min}/min",
