@@ -322,7 +322,7 @@ def _maybe_pause_agent(tenant_id: str, agent_id: str) -> Dict[str, Any]:
     """Best-effort agent pause; returns {paused: bool, error?}."""
     try:
         from synrix_runtime.monitoring.brain import LoopBreaker
-        LoopBreaker.pause_agent(tenant_id, agent_id, reason="loop_intel_v2_apply_fix")
+        LoopBreaker.pause_agent(tenant_id, agent_id, reason=LoopBreaker.APPLY_FIX_PAUSE_REASON)
         return {"paused": True}
     except Exception as e:
         logger.warning("pause_agent failed: %s", e)

@@ -452,8 +452,8 @@ pip install octopoda[all]         # Everything (Python 3.10+)
 | `SYNRIX_HEARTBEAT_INTERVAL_SEC` | `3`                  | Daemon heartbeat polling interval (raise for low-resource boxes) |
 | `SYNRIX_MAX_VERSIONS_PER_RUNTIME_KEY` | `10`           | Schema-level cap on `runtime:*` / `metrics:*` key versions |
 | `SYNRIX_LOOP_CACHE_TTL_SEC` | `1800`                  | Seconds a quiet agent keeps its cached loop score.  After that the fresh score is reported, so a finished burst stops reading as a loop |
-| `SYNRIX_LOOP_PAUSE_TTL_SEC` | `1800`                  | Seconds before an automatic Brain pause (loop severity, cost breaker) lapses.  Manual pauses from `POST /v1/brain/pause` never lapse |
-| `SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS` | unset             | Comma-separated agent ids that automatic pauses skip, for ingest or backfill agents that burst on purpose.  Loop status is still computed and reported for them, and a manual pause still works |
+| `SYNRIX_LOOP_PAUSE_TTL_SEC` | `1800`                  | Seconds before an automatic Brain pause (loop severity, cost breaker) lapses.  Pauses a person asked for (`POST /v1/brain/pause`, the dashboard's apply-fix "pause until I fix the code") never lapse |
+| `SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS` | unset             | Comma-separated agent ids that automatic pauses skip, for ingest or backfill agents that burst on purpose.  Loop status is still computed and reported for them, and a manual or apply-fix pause still works |
 
 ## Contributing
 

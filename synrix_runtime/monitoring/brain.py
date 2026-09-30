@@ -73,9 +73,11 @@ class LoopBreaker:
     TRIGGER_COUNT = 3  # 3 similar writes = loop
     MAX_HISTORY = 30  # Keep last 30 entries per agent
 
-    # Only an operator's pause is forever. Anything automatic lapses so a
+    # Only a pause a person asked for is forever. Anything automatic lapses so a
     # false positive can't lock an agent out until the next restart.
     MANUAL_PAUSE_REASON = "manual"
+    APPLY_FIX_PAUSE_REASON = "loop_intel_v2_apply_fix"  # dashboard "pause until I fix the code"
+    HUMAN_PAUSE_REASONS = frozenset({MANUAL_PAUSE_REASON, APPLY_FIX_PAUSE_REASON})
     PAUSE_TTL_ENV = "SYNRIX_LOOP_PAUSE_TTL_SEC"
     DEFAULT_PAUSE_TTL_SEC = 1800
     PAUSE_EXEMPT_ENV = "SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS"
@@ -169,6 +171,9 @@ class LoopBreaker:
         """Pause an agent due to detected loop."""
         key = f"{tenant_id}:{agent_id}"
         with cls._lock:
+            standing = cls._paused_agents.get(key)
+            if cls._is_human(standing) and reason not in cls.HUMAN_PAUSE_REASONS:
+                return  # a late automatic trip would put a timer on a person's pause
             cls._paused_agents[key] = {
                 "paused_at": time.time(),
                 "reason": reason,
@@ -177,7 +182,7 @@ class LoopBreaker:
 
     @classmethod
     def is_paused(cls, tenant_id: str, agent_id: str) -> bool:
-        """True while a pause holds. Automatic pauses lapse after the TTL; manual ones don't."""
+        """True while a pause holds. Automatic pauses lapse after the TTL; human ones don't."""
         key = f"{tenant_id}:{agent_id}"
         with cls._lock:
             pause = cls._paused_agents.get(key)
@@ -190,8 +195,12 @@ class LoopBreaker:
         return False
 
     @classmethod
+    def _is_human(cls, pause: Optional[dict]) -> bool:
+        return bool(pause) and pause.get("reason") in cls.HUMAN_PAUSE_REASONS
+
+    @classmethod
     def _pause_expired(cls, pause: dict) -> bool:
-        if pause.get("reason") == cls.MANUAL_PAUSE_REASON:
+        if cls._is_human(pause):
             return False
         ttl = env_seconds(cls.PAUSE_TTL_ENV, cls.DEFAULT_PAUSE_TTL_SEC)
         return time.time() - pause.get("paused_at", 0) >= ttl

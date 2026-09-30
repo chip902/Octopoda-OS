@@ -4,10 +4,12 @@ A legit 38-write backlog sync pushed an agent to orange, the v1->v2 wiring
 auto-paused it, and it stayed paused forever: the cached loop score never
 expired, the pause never expired, and a manual resume lasted one write.
 
-Covers three fixes plus guards on the behaviour that should not change:
-  1. cached loop detections expire once the agent is quiet
-  2. automatic (non-manual) pauses expire
+Covers the fixes plus guards on the behaviour that should not change:
+  1. cached loop detections expire once the agent is quiet, and the
+     auto-pause trips on the live score rather than the cached one
+  2. automatic pauses expire; manual and dashboard apply-fix pauses don't
   3. SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS opts ingest agents out of auto-pause
+  4. resume and delete wipe the agent's loop history
 """
 from __future__ import annotations
 
@@ -196,6 +198,34 @@ def test_manual_pause_never_expires(clock, agent_id, breaker):
     assert breaker.is_paused("t1", agent_id) is True
 
 
+def test_dashboard_apply_fix_pause_never_expires(clock, agent_id, breaker):
+    # The dashboard checkbox reads "Pause agent until I fix the code"
+    from synrix_runtime.loop_intel_v2.api import _maybe_pause_agent
+    assert _maybe_pause_agent("t1", agent_id) == {"paused": True}
+
+    clock.advance(30 * 24 * 3600)
+
+    assert breaker.is_paused("t1", agent_id) is True
+
+
+def test_automatic_pause_does_not_turn_a_manual_one_into_a_timed_one(clock, agent_id, breaker):
+    breaker.pause_agent("t1", agent_id, reason="manual")
+    breaker.pause_agent("t1", agent_id, reason=AUTO_REASON)  # e.g. cost breaker firing late
+
+    clock.advance(1801)
+
+    assert breaker.is_paused("t1", agent_id) is True
+
+
+def test_manual_pause_replaces_an_automatic_one(clock, agent_id, breaker):
+    breaker.pause_agent("t1", agent_id, reason=AUTO_REASON)
+    breaker.pause_agent("t1", agent_id, reason="manual")
+
+    clock.advance(1801)
+
+    assert breaker.is_paused("t1", agent_id) is True
+
+
 # ---------------------------------------------------------------------------
 # 3. Ingest agents can opt out of automatic pauses
 # ---------------------------------------------------------------------------
@@ -243,6 +273,15 @@ def test_manual_pause_still_works_on_exempt_agent(agent_id, monkeypatch, breaker
     monkeypatch.setenv("SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS", agent_id)
 
     breaker.pause_agent("t1", agent_id, reason="manual")
+
+    assert breaker.is_paused("t1", agent_id) is True
+
+
+def test_dashboard_apply_fix_pause_still_works_on_exempt_agent(agent_id, monkeypatch, breaker):
+    from synrix_runtime.loop_intel_v2.api import _maybe_pause_agent
+    monkeypatch.setenv("SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS", agent_id)
+
+    _maybe_pause_agent("t1", agent_id)
 
     assert breaker.is_paused("t1", agent_id) is True
 
