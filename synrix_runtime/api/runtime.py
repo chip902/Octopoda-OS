@@ -18,6 +18,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, List, Optional
 from dataclasses import dataclass, field
 
+from synrix_runtime.config import env_seconds
+
 logger = logging.getLogger("synrix.runtime")
 
 # Bounded thread pool for background enrichment (fact extraction + NER).
@@ -36,11 +38,35 @@ _repeat_tracker_lock = threading.Lock()
 _write_tracker: dict = {}  # agent_id -> [{"time": float, "key": str}, ...]
 _write_tracker_lock = threading.Lock()
 
-# Loop status cache: prevents scores from snapping back to 100 when write window expires.
-# Detected loops decay gradually over 15 minutes instead of vanishing instantly.
+# Loop status cache: stops scores snapping back to 100 the moment the write window
+# empties. Once the agent's quiet and the entry's older than the TTL, the fresh score wins.
 _loop_status_cache: dict = {}  # tracker_key -> {"score": int, "severity": str, "time": float, ...}
 _loop_cache_lock = threading.Lock()
-_LOOP_CACHE_DECAY_SECONDS = 3600  # 1 hour to fully decay back to green
+_LOOP_CACHE_TTL_ENV = "SYNRIX_LOOP_CACHE_TTL_SEC"
+_DEFAULT_LOOP_CACHE_TTL_SEC = 1800
+
+
+def _loop_severity(score: int) -> str:
+    """Map a 0-100 loop score to green/yellow/orange/red."""
+    if score >= 80:
+        return "green"
+    if score >= 60:
+        return "yellow"
+    if score >= 35:
+        return "orange"
+    return "red"
+
+
+def reset_loop_state(tenant_id: str, agent_id: str) -> None:
+    """Forget an agent's loop history: the cached status and both write trackers.
+    For an operator resume or a purge, so writes from before can't re-pause the agent."""
+    key = f"{tenant_id}:{agent_id}"
+    with _loop_cache_lock:
+        _loop_status_cache.pop(key, None)
+    with _write_tracker_lock:
+        _write_tracker.pop(key, None)
+    with _repeat_tracker_lock:
+        _repeat_tracker.pop(key, None)
 
 
 @dataclass
@@ -1098,6 +1124,9 @@ class AgentRuntime:
 
         This is the single endpoint a dashboard or monitoring system
         needs to check for loop health.
+
+        score/severity can hold a cached detection after the burst ends.
+        live_score/live_severity are what this call measured, cache aside.
         """
         now = time.time()
         tracker_key = f"{self.tenant_id}:{self.agent_id}"
@@ -1272,11 +1301,12 @@ class AgentRuntime:
 
         # --- Calculate overall severity ---
         score = max(0, score)
+        live_score = score  # before the cache below swaps in an older, worse score
 
         # --- Persist loop detections so scores don't flicker ---
-        # Once a loop is detected, cache the result. Subsequent polls return
-        # the cached score until a WORSE loop is detected (score goes lower).
-        # Scores only improve when the agent is explicitly consolidated/fixed.
+        # While a loop is active we keep reporting the worst cached score.
+        # Once it's quiet, a cached score older than the TTL gets dropped.
+        cache_ttl = env_seconds(_LOOP_CACHE_TTL_ENV, _DEFAULT_LOOP_CACHE_TTL_SEC)
         with _loop_cache_lock:
             cached = _loop_status_cache.get(tracker_key)
             if score < 80:
@@ -1291,24 +1321,16 @@ class AgentRuntime:
                     score = cached["score"]
                     if not signals and cached.get("signals"):
                         signals = cached["signals"]
+            elif cached and now - cached["time"] >= cache_ttl:
+                # Quiet past the TTL: drop it, or a paused agent can never score its way out.
+                del _loop_status_cache[tracker_key]
             elif cached:
-                # No active loop right now, but we have a cached detection.
-                # Keep returning the cached score — it persists until the
-                # agent is consolidated, memories are cleaned, or server restarts.
                 score = cached["score"]
                 if not signals and cached.get("signals"):
                     signals = cached["signals"]
 
         score = max(0, min(100, score))
-
-        if score >= 80:
-            severity = "green"
-        elif score >= 60:
-            severity = "yellow"
-        elif score >= 35:
-            severity = "orange"
-        else:
-            severity = "red"
+        severity = _loop_severity(score)
 
         # --- Classify the loop type and root cause ---
         loop_type = None
@@ -1466,6 +1488,8 @@ class AgentRuntime:
             "agent_id": self.agent_id,
             "severity": severity,
             "score": score,
+            "live_severity": _loop_severity(live_score),
+            "live_score": live_score,
             "signals": signals,
             "signal_count": len(signals),
             "recovery_suggestions": recovery,

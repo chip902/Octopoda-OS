@@ -8,8 +8,8 @@ Architecture:
     in the last WINDOW_SEC seconds, grouped by agent_id
   - If an agent's spend rate exceeds its threshold, calls
     LoopBreaker.pause_agent + emits a notification + records pause_count
-  - Auto-resume is NOT done here — operator must explicitly resume after
-    fixing the underlying cause
+  - Nothing here resumes an agent. The pause lapses after SYNRIX_LOOP_PAUSE_TTL_SEC
+    (see LoopBreaker.is_paused), and the next check re-trips it if spend is still high
 
 This is best-effort safety. It does NOT replace per-call cost limits or
 proper agent code. It catches runaway loops before the bill arrives.
@@ -193,10 +193,10 @@ def trip_on_v1_severity(conn, tenant_id: str, agent_id: str, severity: str,
 
     cur = conn.cursor()
 
-    # Already paused? Idempotent — don't double-increment.
+    # Already paused (don't double-count) or an opted-out ingest agent: no pause, no counter bump.
     try:
         from synrix_runtime.monitoring.brain import LoopBreaker
-        if LoopBreaker.is_paused(tenant_id, agent_id):
+        if LoopBreaker.is_paused(tenant_id, agent_id) or LoopBreaker.is_auto_pause_exempt(agent_id):
             return None
     except Exception:
         pass
@@ -296,8 +296,12 @@ def check_tenant(conn, tenant_id: str) -> List[Dict[str, object]]:
     if not spend_by_agent:
         return actions
 
+    from synrix_runtime.monitoring.brain import LoopBreaker
+
     cur = conn.cursor()
     for agent_id, spend in spend_by_agent.items():
+        if LoopBreaker.is_auto_pause_exempt(agent_id):
+            continue
         resolved = _resolve_threshold(cur, tenant_id, agent_id)
         if resolved is None:
             continue
@@ -309,7 +313,6 @@ def check_tenant(conn, tenant_id: str) -> List[Dict[str, object]]:
 
         # Trip!
         try:
-            from synrix_runtime.monitoring.brain import LoopBreaker
             LoopBreaker.pause_agent(
                 tenant_id, agent_id,
                 reason=f"circuit_breaker:spend=${spend:.4f}/{WINDOW_SEC}s>{threshold_usd_per_min}/min",
