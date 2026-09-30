@@ -473,6 +473,7 @@ pip install octopoda[all]         # everything (Python 3.10+)
 | `SYNRIX_LOOP_CACHE_TTL_SEC`           | `1800`                   | Seconds a quiet agent keeps its cached loop score.  After that the fresh score is reported, so a finished burst stops reading as a loop |
 | `SYNRIX_LOOP_PAUSE_TTL_SEC`           | `1800`                   | Seconds before an automatic Brain pause (loop severity, cost breaker) lapses.  Pauses a person asked for (`POST /v1/brain/pause`, the dashboard's apply-fix "pause until I fix the code") never lapse |
 | `SYNRIX_LOOP_PAUSE_EXEMPT_AGENTS`     | unset                    | Comma-separated agent ids that automatic pauses skip, for ingest or backfill agents that burst on purpose.  Loop status is still computed and reported for them, and a manual or apply-fix pause still works |
+| `SYNRIX_AUTH_DISABLED_ALLOW_NONLOOPBACK` | unset                | Set to `1` to keep `SYNRIX_AUTH_DISABLED=1` working when the server binds a non-loopback address (self-hosted Docker binds `0.0.0.0`).  Only for a host reachable solely over a private network; anything that can reach the port gets full access |
 
 ---
 

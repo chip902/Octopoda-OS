@@ -9,6 +9,7 @@ Auto-generated docs at /docs (Swagger UI).
 
 import json
 import time
+import functools
 import os
 import re
 import asyncio
@@ -840,6 +841,15 @@ def init_cloud_server(daemon, config):
 # Auth dependency
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=None)
+def _warn_nonloopback_bypass(bind_host) -> None:
+    """Log once per bind address that auth is off on a non-loopback interface by explicit opt-in."""
+    logger.warning(
+        "Auth DISABLED on non-loopback bind %s (SYNRIX_AUTH_DISABLED_ALLOW_NONLOOPBACK=1); "
+        "anything that can reach this port has full access", bind_host,
+    )
+
+
 async def verify_auth(authorization: Optional[str] = Header(None)):
     """Verify API key. Returns tenant info dict or None."""
     auth_disabled = os.environ.get("SYNRIX_AUTH_DISABLED", "").strip() == "1"
@@ -853,10 +863,12 @@ async def verify_auth(authorization: Optional[str] = Header(None)):
         # server was not initialized), refuse.
         bind_host = getattr(_config, "api_host", None) if _config is not None else None
         if bind_host not in ("127.0.0.1", "localhost", "::1"):
-            logger.error("SYNRIX_AUTH_DISABLED=1 is NOT allowed when bound to %s — blocking request", bind_host)
-            raise HTTPException(status_code=403, detail="Auth bypass not allowed on public interfaces")
-        else:
-            return {"tenant_id": "dev", "plan": "pro", "max_agents": 100, "max_memories_per_agent": 100000}
+            # self-hosted Docker binds 0.0.0.0 behind a private network; the operator must opt in by name
+            if os.environ.get("SYNRIX_AUTH_DISABLED_ALLOW_NONLOOPBACK", "").strip() != "1":
+                logger.error("SYNRIX_AUTH_DISABLED=1 is NOT allowed when bound to %s — blocking request", bind_host)
+                raise HTTPException(status_code=403, detail="Auth bypass not allowed on public interfaces")
+            _warn_nonloopback_bypass(bind_host)
+        return {"tenant_id": "dev", "plan": "pro", "max_agents": 100, "max_memories_per_agent": 100000}
 
     # Try multi-tenant auth first
     try:
