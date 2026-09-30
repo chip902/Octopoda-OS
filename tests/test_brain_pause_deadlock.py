@@ -333,3 +333,35 @@ def test_api_exempt_agent_is_never_auto_paused(api, agent_id, monkeypatch):
 
     assert 429 not in codes
     assert status["severity"] in ("orange", "red")
+
+
+# ---------------------------------------------------------------------------
+# Resume and purge start the agent's loop tracking over
+# ---------------------------------------------------------------------------
+
+def test_api_resume_right_after_burst_lets_writes_through(api, agent_id):
+    codes = _post_until_paused(api, agent_id)
+    assert codes[-1] == 429, f"burst never tripped the auto-pause: {codes}"
+
+    assert api.post(f"/v1/brain/resume/{agent_id}").status_code == 200
+
+    assert _fresh_writes(api, agent_id, 3) == [200, 200, 200]
+    assert api.get(f"/v1/agents/{agent_id}/loops/status").json()["severity"] == "green"
+
+
+def test_api_resumed_agent_that_loops_again_is_paused_again(api, agent_id):
+    assert _post_until_paused(api, agent_id)[-1] == 429
+    api.post(f"/v1/brain/resume/{agent_id}")
+
+    codes = _post_until_paused(api, agent_id)
+
+    assert codes[-1] == 429, f"a fresh burst after resume should still trip: {codes}"
+
+
+def test_api_deleted_agent_comes_back_with_clean_loop_state(api, agent_id):
+    assert _post_until_paused(api, agent_id)[-1] == 429
+
+    # Soft delete runs the same release step as ?purge=true, which needs Postgres
+    assert api.delete(f"/v1/agents/{agent_id}").status_code == 200
+
+    assert _fresh_writes(api, agent_id, 3) == [200, 200, 200]

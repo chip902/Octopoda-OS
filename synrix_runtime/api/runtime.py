@@ -57,6 +57,18 @@ def _loop_severity(score: int) -> str:
     return "red"
 
 
+def reset_loop_state(tenant_id: str, agent_id: str) -> None:
+    """Forget an agent's loop history: the cached status and both write trackers.
+    For an operator resume or a purge, so writes from before can't re-pause the agent."""
+    key = f"{tenant_id}:{agent_id}"
+    with _loop_cache_lock:
+        _loop_status_cache.pop(key, None)
+    with _write_tracker_lock:
+        _write_tracker.pop(key, None)
+    with _repeat_tracker_lock:
+        _repeat_tracker.pop(key, None)
+
+
 @dataclass
 class MemoryResult:
     node_id: Optional[int]

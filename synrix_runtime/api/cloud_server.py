@@ -1731,6 +1731,17 @@ async def deregister_agent(
         if current == "deregistered":
             raise HTTPException(status_code=404, detail=f"Agent {agent_id} already deregistered")
 
+    # Clear in-memory LoopBreaker pause state — without this, an agent
+    # that was paused by v1->v2 wiring stays paused in the LoopBreaker
+    # _paused_agents dict even after the data is gone. The caller can't
+    # recreate the agent and write to it until the next process restart.
+    # Caught when 3.1.13 verification's test probe stayed paused after purge.
+    # Runs before eviction below since it reads the cached runtime's tenant.
+    try:
+        _release_brain_pause(tenant_id, agent_id)
+    except Exception:
+        pass
+
     # Always evict in-process caches so the UI reflects reality immediately.
     cache_key = f"{tenant_id}:{agent_id}"
     if cache_key in _agent_runtimes:
@@ -1743,17 +1754,6 @@ async def deregister_agent(
         from synrix_runtime.monitoring.metrics import MetricsCollector
         with MetricsCollector._cache_lock:
             MetricsCollector._metrics_cache.pop(f"{tenant_id}:{agent_id}", None)
-    except Exception:
-        pass
-
-    # Clear in-memory LoopBreaker pause state — without this, an agent
-    # that was paused by v1->v2 wiring stays paused in the LoopBreaker
-    # _paused_agents dict even after the data is gone. The caller can't
-    # recreate the agent and write to it until the next process restart.
-    # Caught when 3.1.13 verification's test probe stayed paused after purge.
-    try:
-        from synrix_runtime.monitoring.brain import LoopBreaker
-        LoopBreaker.resume_agent(tenant_id, agent_id)
     except Exception:
         pass
 
@@ -4944,6 +4944,17 @@ async def brain_conflicts(agent_id: str, auth=Depends(verify_auth)):
     return {"agent_id": agent_id, "conflicts": conflicts, "count": len(conflicts)}
 
 
+def _release_brain_pause(tenant_id: str, agent_id: str) -> None:
+    """Lift a Brain pause and drop the loop history behind it, so the next
+    write isn't judged on the burst that caused the pause."""
+    from synrix_runtime.monitoring.brain import LoopBreaker
+    from synrix_runtime.api.runtime import reset_loop_state
+    LoopBreaker.resume_agent(tenant_id, agent_id)
+    # Loop trackers key on the runtime's own tenant, which is _default in auth-disabled mode.
+    runtime = _agent_runtimes.get(f"{tenant_id}:{agent_id}")
+    reset_loop_state(getattr(runtime, "tenant_id", tenant_id), agent_id)
+
+
 @app.post("/v1/brain/pause/{agent_id}")
 async def brain_pause(agent_id: str, auth=Depends(verify_auth)):
     """Pause an agent (kill switch)."""
@@ -4957,8 +4968,7 @@ async def brain_pause(agent_id: str, auth=Depends(verify_auth)):
 async def brain_resume(agent_id: str, auth=Depends(verify_auth)):
     """Resume a paused agent."""
     tenant_id = _get_tenant_id(auth)
-    from synrix_runtime.monitoring.brain import LoopBreaker
-    LoopBreaker.resume_agent(tenant_id, agent_id)
+    _release_brain_pause(tenant_id, agent_id)
     return {"agent_id": agent_id, "resumed": True}
 
 
