@@ -146,6 +146,18 @@ def test_active_loop_keeps_worst_cached_score_even_past_ttl(loop_agent, clock):
     assert status["score"] == worst
 
 
+def test_loop_status_reports_live_score_next_to_cached_one(loop_agent, clock):
+    _burst(loop_agent)
+    assert loop_agent.get_loop_status()["live_severity"] in ("orange", "red")
+
+    clock.advance(400)  # write window is empty, cached entry still inside its TTL
+    status = loop_agent.get_loop_status()
+
+    assert status["severity"] in ("orange", "red")
+    assert status["live_score"] == 100
+    assert status["live_severity"] == "green"
+
+
 # ---------------------------------------------------------------------------
 # 2. Automatic pauses expire, manual pauses never do
 # ---------------------------------------------------------------------------
@@ -290,6 +302,27 @@ def test_api_auto_paused_agent_can_write_again_after_ttl(api, clock, agent_id):
 
     assert first.status_code == 200
     assert second.status_code == 200, "stale cached loop re-paused the agent"
+
+
+def _fresh_writes(api, agent_id: str, count: int) -> list:
+    # Distinct keys, so on their own these never look like a loop.
+    return [api.post(f"/v1/agents/{agent_id}/remember",
+                     json={"key": f"after:{i}", "value": i}).status_code
+            for i in range(count)]
+
+
+def test_api_status_poll_after_pause_does_not_extend_lockout(api, clock, agent_id):
+    codes = _post_until_paused(api, agent_id)
+    assert codes[-1] == 429, f"burst never tripped the auto-pause: {codes}"
+
+    # A dashboard or MCP poll while paused rewrites the cached entry's time
+    clock.advance(30)
+    polled = api.get(f"/v1/agents/{agent_id}/loops/status").json()
+    assert polled["severity"] in ("orange", "red")
+
+    clock.advance(1771)  # pause is 1801s old, cached entry only 1771s
+
+    assert _fresh_writes(api, agent_id, 2) == [200, 200]
 
 
 def test_api_exempt_agent_is_never_auto_paused(api, agent_id, monkeypatch):

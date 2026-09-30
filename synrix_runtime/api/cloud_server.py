@@ -2068,7 +2068,9 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
     def _bg_v1_to_v2_trip():
         try:
             status = runtime.get_loop_status() or {}
-            sev = status.get("severity")
+            # The cached severity can outlive the burst by the cache TTL, so it
+            # would re-pause an agent that's gone quiet. Trip on what's live.
+            sev = status.get("live_severity")
             if sev not in ("orange", "red"):
                 return
             from synrix_runtime.monitoring.brain import LoopBreaker
@@ -2091,7 +2093,7 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
                 _cb.trip_on_v1_severity(
                     conn, tenant_id, agent_id,
                     severity=sev,
-                    score=status.get("score") or 0,
+                    score=status.get("live_score") or 0,
                     signal_count=len(signals),
                 )
             finally:

@@ -46,6 +46,17 @@ _LOOP_CACHE_TTL_ENV = "SYNRIX_LOOP_CACHE_TTL_SEC"
 _DEFAULT_LOOP_CACHE_TTL_SEC = 1800
 
 
+def _loop_severity(score: int) -> str:
+    """Map a 0-100 loop score to green/yellow/orange/red."""
+    if score >= 80:
+        return "green"
+    if score >= 60:
+        return "yellow"
+    if score >= 35:
+        return "orange"
+    return "red"
+
+
 @dataclass
 class MemoryResult:
     node_id: Optional[int]
@@ -1101,6 +1112,9 @@ class AgentRuntime:
 
         This is the single endpoint a dashboard or monitoring system
         needs to check for loop health.
+
+        score/severity can hold a cached detection after the burst ends.
+        live_score/live_severity are what this call measured, cache aside.
         """
         now = time.time()
         tracker_key = f"{self.tenant_id}:{self.agent_id}"
@@ -1275,6 +1289,7 @@ class AgentRuntime:
 
         # --- Calculate overall severity ---
         score = max(0, score)
+        live_score = score  # before the cache below swaps in an older, worse score
 
         # --- Persist loop detections so scores don't flicker ---
         # While a loop is active we keep reporting the worst cached score.
@@ -1303,15 +1318,7 @@ class AgentRuntime:
                     signals = cached["signals"]
 
         score = max(0, min(100, score))
-
-        if score >= 80:
-            severity = "green"
-        elif score >= 60:
-            severity = "yellow"
-        elif score >= 35:
-            severity = "orange"
-        else:
-            severity = "red"
+        severity = _loop_severity(score)
 
         # --- Classify the loop type and root cause ---
         loop_type = None
@@ -1469,6 +1476,8 @@ class AgentRuntime:
             "agent_id": self.agent_id,
             "severity": severity,
             "score": score,
+            "live_severity": _loop_severity(live_score),
+            "live_score": live_score,
             "signals": signals,
             "signal_count": len(signals),
             "recovery_suggestions": recovery,
