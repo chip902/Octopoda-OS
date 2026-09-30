@@ -14,6 +14,8 @@ Covers the fixes plus guards on the behaviour that should not change:
 from __future__ import annotations
 
 import importlib
+import pathlib
+import re
 import time as _real_time
 import uuid
 from concurrent.futures import Future
@@ -404,3 +406,21 @@ def test_api_deleted_agent_comes_back_with_clean_loop_state(api, agent_id):
     assert api.delete(f"/v1/agents/{agent_id}").status_code == 200
 
     assert _fresh_writes(api, agent_id, 3) == [200, 200, 200]
+
+
+# ---------------------------------------------------------------------------
+# Deployment: the settings have to reach the container
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def test_compose_passes_loop_settings_through_to_the_api_container():
+    # compose only uses .env for ${} substitution, so each var has to be listed under environment:
+    documented = re.findall(r"(?m)^(SYNRIX_LOOP_\w+)=", (REPO_ROOT / ".env.example").read_text())
+    compose = (REPO_ROOT / "docker-compose.yml").read_text()
+
+    missing = [name for name in documented if f"{name}=${{{name}" not in compose]
+
+    assert len(documented) == 3
+    assert missing == []
