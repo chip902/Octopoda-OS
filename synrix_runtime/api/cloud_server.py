@@ -444,10 +444,10 @@ def _periodic_auditv2_retention():
             if days <= 0:
                 continue
             cutoff_ts = time.time() - days * 86400
-            import psycopg2
             dsn = os.environ.get("DATABASE_URL")
             if not dsn:
                 continue
+            import psycopg2
             conn = psycopg2.connect(dsn)
             conn.autocommit = True
             try:
@@ -518,11 +518,11 @@ def _periodic_stall_detector():
     time.sleep(interval)
     while True:
         try:
-            import psycopg2
             dsn = os.environ.get("DATABASE_URL")
             if not dsn:
                 time.sleep(interval)
                 continue
+            import psycopg2
             now = time.time()
             cutoff = now - threshold
             conn = psycopg2.connect(dsn)
@@ -1806,13 +1806,13 @@ async def deregister_agent(
     #   5. soft-budget the whole thing at MAX_SECS so the response fits
     #      inside the gateway window; if we hit it we return partial=true
     #      and the client can retry.
-    import psycopg2
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         raise HTTPException(
             status_code=500,
             detail="DATABASE_URL not set; purge unavailable",
         )
+    import psycopg2
 
     namespaces = [
         f"runtime:agents:{agent_id}:",
