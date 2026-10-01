@@ -87,14 +87,17 @@ def check_db_size():
 
 
 def check_gc_duration():
-    res = run(["docker", "logs", "--tail", "300", CONTAINER], timeout=15)
+    # Read logs since container start to handle the case where the last
+    # 300 lines are from a fresh container that never reached GC cycle.
+    res = run(["docker", "logs", "--since", "24h", CONTAINER], timeout=30)
     if res.returncode == 124:
-        return ("warn", -1, "docker logs timeout")
+        return ("warn", -1, "docker logs timeout (24h scan)")
     if res.returncode != 0:
         return ("crit", -1, "logs unreadable")
-    matches = re.findall(r"GC complete:.*?pruned in ([\d.]+)ms", res.stdout + res.stderr)
+    combined = res.stdout + res.stderr
+    matches = re.findall(r"GC complete:.*?pruned in ([\d.]+)ms", combined)
     if not matches:
-        return ("ok", -1, "no GC seen")
+        return ("warn", -1, "no GC seen in last 24h (hidden from healthcheck)")
     last_s = float(matches[-1]) / 1000.0
     if last_s > CRIT_GC_S:
         return ("crit", round(last_s, 1), f"last GC {last_s:.1f}s")

@@ -520,8 +520,9 @@ class SynrixSQLiteClient:
                          embedding, now, new_version),
                     )
 
-                    # Sync FTS: remove old version, add new
-                    self._sync_fts(conn, node_id, name, data, collection)
+                    # Sync FTS: skip for snapshot keys (each ~10 MB, bloats the index)
+                    if ":snapshots:" not in name:
+                        self._sync_fts(conn, node_id, name, data, collection)
                 else:
                     # First version
                     node_id = hash(f"{collection}:{name}") % (2**63)
@@ -537,8 +538,9 @@ class SynrixSQLiteClient:
                          embedding, now),
                     )
 
-                    # Sync FTS
-                    self._sync_fts(conn, node_id, name, data, collection)
+                    # Sync FTS: skip for snapshot keys (each ~10 MB, bloats the index)
+                    if ":snapshots:" not in name:
+                        self._sync_fts(conn, node_id, name, data, collection)
 
                 conn.commit()
 

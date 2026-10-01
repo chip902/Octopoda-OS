@@ -444,10 +444,10 @@ def _periodic_auditv2_retention():
             if days <= 0:
                 continue
             cutoff_ts = time.time() - days * 86400
-            import psycopg2
             dsn = os.environ.get("DATABASE_URL")
             if not dsn:
                 continue
+            import psycopg2
             conn = psycopg2.connect(dsn)
             conn.autocommit = True
             try:
@@ -518,11 +518,11 @@ def _periodic_stall_detector():
     time.sleep(interval)
     while True:
         try:
-            import psycopg2
             dsn = os.environ.get("DATABASE_URL")
             if not dsn:
                 time.sleep(interval)
                 continue
+            import psycopg2
             now = time.time()
             cutoff = now - threshold
             conn = psycopg2.connect(dsn)
@@ -912,8 +912,15 @@ async def verify_auth(authorization: Optional[str] = Header(None)):
 _agent_runtimes: OrderedDict = OrderedDict()
 _MAX_CACHED_RUNTIMES = 1000
 
-# Auto-checkpoint: tracks write count per agent, snapshots every 25 writes
+# Auto-checkpoint: tracks write count per agent, snapshots every N writes.
+# SYNRIX_AUTO_SNAPSHOT_EVERY (default 25) controls the frequency.
+# SYNRIX_AUTO_SNAPSHOT_EXEMPT_AGENTS (comma-separated agent IDs) skips
+# auto-snapshot for specific agents (e.g. andrew-context, ~10 MB each).
 _auto_checkpoint_counter: dict = {}
+_auto_snapshot_every: int = int(os.environ.get("SYNRIX_AUTO_SNAPSHOT_EVERY", "25"))
+_auto_snapshot_exempt: set = {
+    a.strip() for a in os.environ.get("SYNRIX_AUTO_SNAPSHOT_EXEMPT_AGENTS", "").split(",") if a.strip()
+}
 # Bounded pool for background checkpoint + brain work (v3.1.3 p99 fix)
 # Prevents thread explosion under high concurrency. Writes queue rather than spawn unbounded threads.
 from concurrent.futures import ThreadPoolExecutor as _TPE
@@ -1799,13 +1806,13 @@ async def deregister_agent(
     #   5. soft-budget the whole thing at MAX_SECS so the response fits
     #      inside the gateway window; if we hit it we return partial=true
     #      and the client can retry.
-    import psycopg2
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         raise HTTPException(
             status_code=500,
             detail="DATABASE_URL not set; purge unavailable",
         )
+    import psycopg2
 
     namespaces = [
         f"runtime:agents:{agent_id}:",
@@ -2041,25 +2048,29 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
     # Track latency & errors for anomaly detection
     _track_latency_and_errors(agent_id, result.latency_us, result.success, runtime)
 
-    # Auto-checkpoint: save a snapshot every 25 writes (non-blocking)
-    try:
-        _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] = _auto_checkpoint_counter.get(f"{tenant_id}:{agent_id}", 0) + 1
-        if _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] >= 25:
-            _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] = 0
-            def _bg_checkpoint():
-                try:
-                    runtime.snapshot(label=f"auto-{int(time.time())}")
-                except Exception as bg_e:
-                    logger.warning("auto-snapshot failed | tenant=%s agent=%s: %s",
-                                   tenant_id, agent_id, bg_e)
-                    _capture_silent(bg_e, op="auto_snapshot",
-                                    tenant_id=tenant_id, agent_id=agent_id)
-            _bg_work_pool.submit(_bg_checkpoint)
-    except Exception as e:
-        logger.warning("auto-checkpoint scheduler failed | tenant=%s agent=%s: %s",
-                       tenant_id, agent_id, e)
-        _capture_silent(e, op="auto_checkpoint_schedule",
-                        tenant_id=tenant_id, agent_id=agent_id)
+    # Auto-checkpoint: save a snapshot every N writes (non-blocking).
+    # Exempt agents configured via SYNRIX_AUTO_SNAPSHOT_EXEMPT_AGENTS env var.
+    if agent_id in _auto_snapshot_exempt:
+        pass  # skip auto-snapshot for exempt agents
+    else:
+        try:
+            _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] = _auto_checkpoint_counter.get(f"{tenant_id}:{agent_id}", 0) + 1
+            if _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] >= _auto_snapshot_every:
+                _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] = 0
+                def _bg_checkpoint():
+                    try:
+                        runtime.snapshot(label=f"auto-{int(time.time())}")
+                    except Exception as bg_e:
+                        logger.warning("auto-snapshot failed | tenant=%s agent=%s: %s",
+                                       tenant_id, agent_id, bg_e)
+                        _capture_silent(bg_e, op="auto_snapshot",
+                                        tenant_id=tenant_id, agent_id=agent_id)
+                _bg_work_pool.submit(_bg_checkpoint)
+        except Exception as e:
+            logger.warning("auto-checkpoint scheduler failed | tenant=%s agent=%s: %s",
+                           tenant_id, agent_id, e)
+            _capture_silent(e, op="auto_checkpoint_schedule",
+                            tenant_id=tenant_id, agent_id=agent_id)
 
     # Brain Intelligence — fire-and-forget on bounded pool (v3.1.3 p99 fix)
     # Previously ran synchronously on request path, adding 100-500ms+ p99 spikes.
