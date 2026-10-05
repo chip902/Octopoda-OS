@@ -119,3 +119,33 @@ class TestGcSnapshotPruning:
                 gc_backend.write(f"agents:{agent}:snapshots:s{i}", {"value": {"created_at": now - (4 - i) * 60}})
         assert self._gc(gc_backend, keep=2).run_gc()["snapshots_pruned"] == 4
         assert _snapshot_keys(gc_backend, "a1") == {"agents:a1:snapshots:s2", "agents:a1:snapshots:s3"}
+
+
+@pytest.fixture
+def no_postgres(monkeypatch):
+    """Self-hosted SQLite: no DATABASE_URL, and any attempt to reach Postgres is recorded."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    from synrix_runtime.api import tenant
+    calls = []
+    monkeypatch.setattr(tenant.TenantManager, "get_instance", classmethod(lambda cls: calls.append(1) or None))
+    monkeypatch.setattr(cs, "_memory_cap_cache", {})
+    monkeypatch.setattr(cs, "_tenant_settings", {})
+    return calls
+
+
+class TestPostgresOnlyPathsWithoutDatabaseUrl:
+    def test_memory_cap_check_skips_postgres(self, no_postgres):
+        cs._enforce_tenant_memory_cap("dev")
+        assert no_postgres == []
+
+    def test_platform_usage_skips_postgres_and_allows(self, no_postgres):
+        assert cs._check_and_increment_platform_usage("dev") is True
+        assert no_postgres == []
+
+    def test_audit_log_is_skipped_quietly(self, no_postgres, capsys):
+        from synrix_runtime import audit_v2
+        from synrix_runtime.audit_v2 import async_writer
+        before = async_writer._queue.qsize()
+        assert audit_v2.log("dev", "memory.write", "andrew-context", key="k", value="v") == -1
+        assert async_writer._queue.qsize() == before
+        assert "failed" not in capsys.readouterr().err

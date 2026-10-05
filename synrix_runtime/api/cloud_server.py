@@ -4223,6 +4223,11 @@ _platform_usage_lock = threading.Lock()
 
 _ADMIN_TENANTS = {"bf1506e1e2bbc462", "1f3442be42cfd12f"}  # platform owner accounts
 
+def _postgres_configured() -> bool:
+    """Plan caps and platform metering live in Postgres; self-hosted SQLite has neither."""
+    return bool(os.environ.get("DATABASE_URL"))
+
+
 def _check_and_increment_platform_usage(tenant_id: str) -> bool:
     """Atomically check and increment platform free tier counter.
 
@@ -4236,7 +4241,7 @@ def _check_and_increment_platform_usage(tenant_id: str) -> bool:
     Everyone gets 100 free extractions, then must add their own API key.
     Only admin (platform owner) accounts bypass the limit.
     """
-    if tenant_id in _ADMIN_TENANTS:
+    if tenant_id in _ADMIN_TENANTS or not _postgres_configured():
         return True
 
     # Fast-path: if we've cached that this tenant is off platform, skip the
@@ -4348,6 +4353,8 @@ def _enforce_tenant_memory_cap(tenant_id: str):
     side-effect rows. A 30-second cache prevents the DB count from being run
     on every single remember() call.
     """
+    if not _postgres_configured():
+        return
     now = time.time()
     cached = _memory_cap_cache.get(tenant_id)
     if cached and (now - cached[0]) < _MEMORY_CAP_TTL:

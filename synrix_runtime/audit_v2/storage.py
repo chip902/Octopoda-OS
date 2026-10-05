@@ -49,6 +49,11 @@ _pool = None
 _pool_lock = threading.Lock()
 
 
+def is_configured() -> bool:
+    """True when audit_v2 has a Postgres to write to (psycopg2 installed + DATABASE_URL set)."""
+    return psycopg2 is not None and bool(os.environ.get("DATABASE_URL"))
+
+
 def _get_pool():
     """Return a lazy-initialised Postgres connection pool."""
     global _pool

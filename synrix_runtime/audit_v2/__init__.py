@@ -68,6 +68,9 @@ def log(
     Silent-failure is intentional: auditing MUST NOT break the main code
     path. If storage fails we return -1 and log the error internally.
     """
+    # Self-hosted SQLite has no audit store; skip quietly instead of a traceback per write
+    if not _storage.is_configured():
+        return -1
     # Auto-attach trace_id from the current scope (correlation tracking)
     _extra = dict(extra) if extra else {}
     _tid = _current_trace_id()
