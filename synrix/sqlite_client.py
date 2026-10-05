@@ -296,6 +296,10 @@ class SynrixSQLiteClient:
         # keeps nodes_fts to real memories only.
         if name.startswith(("runtime:", "metrics:", "alerts:")):
             return
+        # Snapshots are full copies of an agent (~10 MB for andrew-context) and are
+        # restored by name, never searched; indexing them roughly doubled their cost.
+        if ":snapshots:" in name:
+            return
         try:
             # Remove any existing entry with this rowid
             conn.execute(
@@ -520,9 +524,7 @@ class SynrixSQLiteClient:
                          embedding, now, new_version),
                     )
 
-                    # Sync FTS: skip for snapshot keys (each ~10 MB, bloats the index)
-                    if ":snapshots:" not in name:
-                        self._sync_fts(conn, node_id, name, data, collection)
+                    self._sync_fts(conn, node_id, name, data, collection)
                 else:
                     # First version
                     node_id = hash(f"{collection}:{name}") % (2**63)
@@ -538,9 +540,7 @@ class SynrixSQLiteClient:
                          embedding, now),
                     )
 
-                    # Sync FTS: skip for snapshot keys (each ~10 MB, bloats the index)
-                    if ":snapshots:" not in name:
-                        self._sync_fts(conn, node_id, name, data, collection)
+                    self._sync_fts(conn, node_id, name, data, collection)
 
                 conn.commit()
 
@@ -552,6 +552,27 @@ class SynrixSQLiteClient:
                 conn.rollback()
                 logger.warning(f"SQLite write failed: {e}")
                 return None
+
+    def list_names(
+        self,
+        prefix: str,
+        contains: Optional[str] = None,
+        collection: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Names + updated_at of current nodes under a prefix, newest first, without loading data."""
+        if collection is None:
+            collection = "nodes"
+        escaped = prefix.replace("%", "\\%").replace("_", "\\_")
+        sql = """SELECT name, updated_at FROM nodes
+                 WHERE collection = ? AND name LIKE ? ESCAPE '\\'
+                   AND (valid_until IS NULL OR valid_until = 0)"""
+        params: list = [collection, escaped + "%"]
+        if contains:
+            sql += " AND instr(name, ?) > 0"
+            params.append(contains)
+        with self._conn() as conn:
+            rows = conn.execute(sql + " ORDER BY updated_at DESC", params).fetchall()
+        return [{"name": row["name"], "updated_at": row["updated_at"]} for row in rows]
 
     def query_prefix(
         self,

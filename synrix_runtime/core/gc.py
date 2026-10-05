@@ -130,15 +130,15 @@ class GarbageCollector:
         stats["elapsed_ms"] = round(elapsed_ms, 1)
         self._last_run = now
 
-        if total_deleted > 0:
-            logger.info(
-                "GC complete: %d entries pruned in %.1fms "
-                "(metrics=%d events=%d alerts=%d audit=%d runtime_agents=%d snapshots=%d)",
-                total_deleted, elapsed_ms,
-                stats["metrics_deleted"], stats["events_deleted"],
-                stats["alerts_deleted"], stats["audit_deleted"],
-                stats["runtime_agents_deleted"], stats["snapshots_pruned"],
-            )
+        # Logged on every run, even at 0: scripts/health_check.py reads this line as proof GC is alive
+        logger.info(
+            "GC complete: %d entries pruned in %.1fms "
+            "(metrics=%d events=%d alerts=%d audit=%d runtime_agents=%d snapshots=%d)",
+            total_deleted, elapsed_ms,
+            stats["metrics_deleted"], stats["events_deleted"],
+            stats["alerts_deleted"], stats["audit_deleted"],
+            stats["runtime_agents_deleted"], stats["snapshots_pruned"],
+        )
 
         return stats
 
@@ -148,26 +148,13 @@ class GarbageCollector:
         if max_snaps <= 0:
             return 0
 
-        # Scan all keys under agents: to find snapshot entries.
-        # Each agent keeps max_snaps snapshots (configurable, default 10).
-        # We scan more than the old 5,000 limit to handle agents with many
-        # keys (memories, metrics, etc.) that can hide snapshots.
-        results = self.backend.query_prefix("agents:", limit=20000)
+        # Snapshot keys only, names and timestamps: a capped scan of every agents: row loses
+        # the OLDEST snapshots first (newest-first order), which are exactly the ones to prune.
         agent_snapshots: dict[str, list] = {}
-
-        for r in results:
-            key = r.get("key", "")
-            if ":snapshots:" not in key:
-                continue
-            parts = key.split(":")
+        for r in self.backend.list_keys("agents:", contains=":snapshots:"):
+            parts = r["key"].split(":")
             if len(parts) >= 4:
-                agent_id = parts[1]
-                if agent_id not in agent_snapshots:
-                    agent_snapshots[agent_id] = []
-                data = r.get("data", {})
-                val = data.get("value", data)
-                ts = val.get("created_at", 0) if isinstance(val, dict) else 0
-                agent_snapshots[agent_id].append({"key": key, "ts": ts})
+                agent_snapshots.setdefault(parts[1], []).append({"key": r["key"], "ts": r["updated_at"]})
 
         total_pruned = 0
         for agent_id, snapshots in agent_snapshots.items():

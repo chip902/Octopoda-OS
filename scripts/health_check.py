@@ -87,8 +87,8 @@ def check_db_size():
 
 
 def check_gc_duration():
-    # Read logs since container start to handle the case where the last
-    # 300 lines are from a fresh container that never reached GC cycle.
+    # GC runs at daemon start and every 6h and always logs "GC complete", so 24h of logs
+    # holds one even after a redeploy; --tail 300 lost it under the per-write error flood.
     res = run(["docker", "logs", "--since", "24h", CONTAINER], timeout=30)
     if res.returncode == 124:
         return ("warn", -1, "docker logs timeout (24h scan)")
