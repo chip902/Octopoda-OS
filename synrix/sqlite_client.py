@@ -296,6 +296,10 @@ class SynrixSQLiteClient:
         # keeps nodes_fts to real memories only.
         if name.startswith(("runtime:", "metrics:", "alerts:")):
             return
+        # Snapshots are full copies of an agent (~10 MB for andrew-context) and are
+        # restored by name, never searched; indexing them roughly doubled their cost.
+        if ":snapshots:" in name:
+            return
         try:
             # Remove any existing entry with this rowid
             conn.execute(
@@ -520,9 +524,7 @@ class SynrixSQLiteClient:
                          embedding, now, new_version),
                     )
 
-                    # Sync FTS: skip for snapshot keys (each ~10 MB, bloats the index)
-                    if ":snapshots:" not in name:
-                        self._sync_fts(conn, node_id, name, data, collection)
+                    self._sync_fts(conn, node_id, name, data, collection)
                 else:
                     # First version
                     node_id = hash(f"{collection}:{name}") % (2**63)
@@ -538,9 +540,7 @@ class SynrixSQLiteClient:
                          embedding, now),
                     )
 
-                    # Sync FTS: skip for snapshot keys (each ~10 MB, bloats the index)
-                    if ":snapshots:" not in name:
-                        self._sync_fts(conn, node_id, name, data, collection)
+                    self._sync_fts(conn, node_id, name, data, collection)
 
                 conn.commit()
 

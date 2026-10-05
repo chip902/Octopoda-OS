@@ -43,3 +43,25 @@ class TestAutoSnapshotDecision:
         cs._should_auto_snapshot("dev", "marvin")
         assert not cs._should_auto_snapshot("dev", "friday")
         assert cs._should_auto_snapshot("dev", "marvin")
+
+
+def _fts_rows(client, name: str) -> int:
+    with client._conn() as conn:
+        return conn.execute(
+            "SELECT count(*) FROM nodes_fts WHERE rowid IN (SELECT id FROM nodes WHERE name = ?)", (name,)
+        ).fetchone()[0]
+
+
+class TestSnapshotKeysSkipFts:
+    def test_new_snapshot_key_is_not_indexed(self, sqlite_client):
+        sqlite_client.add_node("agents:andrew-context:snapshots:auto-1", data='{"blob": "needle"}')
+        assert _fts_rows(sqlite_client, "agents:andrew-context:snapshots:auto-1") == 0
+
+    def test_rewritten_snapshot_key_is_not_indexed(self, sqlite_client):
+        sqlite_client.add_node("agents:marvin:snapshots:manual", data='{"v": 1}')
+        sqlite_client.add_node("agents:marvin:snapshots:manual", data='{"v": 2}')
+        assert _fts_rows(sqlite_client, "agents:marvin:snapshots:manual") == 0
+
+    def test_memory_key_is_still_indexed(self, sqlite_client):
+        sqlite_client.add_node("agents:marvin:memories:note", data='{"value": "needle"}')
+        assert _fts_rows(sqlite_client, "agents:marvin:memories:note") == 1
