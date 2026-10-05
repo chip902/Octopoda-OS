@@ -130,15 +130,15 @@ class GarbageCollector:
         stats["elapsed_ms"] = round(elapsed_ms, 1)
         self._last_run = now
 
-        if total_deleted > 0:
-            logger.info(
-                "GC complete: %d entries pruned in %.1fms "
-                "(metrics=%d events=%d alerts=%d audit=%d runtime_agents=%d snapshots=%d)",
-                total_deleted, elapsed_ms,
-                stats["metrics_deleted"], stats["events_deleted"],
-                stats["alerts_deleted"], stats["audit_deleted"],
-                stats["runtime_agents_deleted"], stats["snapshots_pruned"],
-            )
+        # Logged on every run, even at 0: scripts/health_check.py reads this line as proof GC is alive
+        logger.info(
+            "GC complete: %d entries pruned in %.1fms "
+            "(metrics=%d events=%d alerts=%d audit=%d runtime_agents=%d snapshots=%d)",
+            total_deleted, elapsed_ms,
+            stats["metrics_deleted"], stats["events_deleted"],
+            stats["alerts_deleted"], stats["audit_deleted"],
+            stats["runtime_agents_deleted"], stats["snapshots_pruned"],
+        )
 
         return stats
 

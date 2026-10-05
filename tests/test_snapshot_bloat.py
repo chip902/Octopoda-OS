@@ -149,3 +149,32 @@ class TestPostgresOnlyPathsWithoutDatabaseUrl:
         assert audit_v2.log("dev", "memory.write", "andrew-context", key="k", value="v") == -1
         assert async_writer._queue.qsize() == before
         assert "failed" not in capsys.readouterr().err
+
+
+def _load_health_check():
+    import importlib.util, pathlib
+    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "health_check.py"
+    spec = importlib.util.spec_from_file_location("health_check", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestGcVisibleToHealthcheck:
+    def test_gc_logs_completion_even_when_nothing_was_pruned(self, gc_backend, caplog):
+        from synrix_runtime.core.gc import GCConfig, GarbageCollector
+        config = GCConfig(metrics_days=7, events_days=0, alerts_days=0, audit_days=0, max_snapshots_per_agent=10)
+        with caplog.at_level("INFO", logger="synrix.gc"):
+            GarbageCollector(gc_backend, config).run_gc()
+        assert "GC complete: 0 entries pruned in" in caplog.text
+
+    def test_healthcheck_reads_an_idle_gc_line_as_ok(self, monkeypatch):
+        hc = _load_health_check()
+        logs = "[03:49:13] INFO synrix.gc: GC complete: 0 entries pruned in 12.5ms (metrics=0 ...)\n"
+        monkeypatch.setattr(hc, "run", lambda cmd, timeout=20: type("R", (), {"returncode": 0, "stdout": logs, "stderr": ""})())
+        assert hc.check_gc_duration() == ("ok", 0.0, "")
+
+    def test_healthcheck_warns_when_no_gc_line_at_all(self, monkeypatch):
+        hc = _load_health_check()
+        monkeypatch.setattr(hc, "run", lambda cmd, timeout=20: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+        assert hc.check_gc_duration()[0] == "warn"
