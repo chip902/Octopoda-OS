@@ -912,15 +912,25 @@ async def verify_auth(authorization: Optional[str] = Header(None)):
 _agent_runtimes: OrderedDict = OrderedDict()
 _MAX_CACHED_RUNTIMES = 1000
 
-# Auto-checkpoint: tracks write count per agent, snapshots every N writes.
-# SYNRIX_AUTO_SNAPSHOT_EVERY (default 25) controls the frequency.
-# SYNRIX_AUTO_SNAPSHOT_EXEMPT_AGENTS (comma-separated agent IDs) skips
-# auto-snapshot for specific agents (e.g. andrew-context, ~10 MB each).
+# Auto-checkpoint: SYNRIX_AUTO_SNAPSHOT_EVERY writes per agent (default 25, 0 or less = off);
+# SYNRIX_AUTO_SNAPSHOT_EXEMPT_AGENTS skips agents whose full copy is huge (andrew-context, ~10 MB).
 _auto_checkpoint_counter: dict = {}
 _auto_snapshot_every: int = int(os.environ.get("SYNRIX_AUTO_SNAPSHOT_EVERY", "25"))
 _auto_snapshot_exempt: set = {
     a.strip() for a in os.environ.get("SYNRIX_AUTO_SNAPSHOT_EXEMPT_AGENTS", "").split(",") if a.strip()
 }
+
+
+def _should_auto_snapshot(tenant_id: str, agent_id: str) -> bool:
+    """Count one write for this agent and say whether it's time for an auto-snapshot."""
+    if _auto_snapshot_every <= 0 or agent_id in _auto_snapshot_exempt:
+        return False
+    key = f"{tenant_id}:{agent_id}"
+    _auto_checkpoint_counter[key] = _auto_checkpoint_counter.get(key, 0) + 1
+    if _auto_checkpoint_counter[key] < _auto_snapshot_every:
+        return False
+    _auto_checkpoint_counter[key] = 0
+    return True
 # Bounded pool for background checkpoint + brain work (v3.1.3 p99 fix)
 # Prevents thread explosion under high concurrency. Writes queue rather than spawn unbounded threads.
 from concurrent.futures import ThreadPoolExecutor as _TPE
@@ -2048,29 +2058,23 @@ async def remember(agent_id: str, req: RememberRequest, auth=Depends(verify_auth
     # Track latency & errors for anomaly detection
     _track_latency_and_errors(agent_id, result.latency_us, result.success, runtime)
 
-    # Auto-checkpoint: save a snapshot every N writes (non-blocking).
-    # Exempt agents configured via SYNRIX_AUTO_SNAPSHOT_EXEMPT_AGENTS env var.
-    if agent_id in _auto_snapshot_exempt:
-        pass  # skip auto-snapshot for exempt agents
-    else:
-        try:
-            _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] = _auto_checkpoint_counter.get(f"{tenant_id}:{agent_id}", 0) + 1
-            if _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] >= _auto_snapshot_every:
-                _auto_checkpoint_counter[f"{tenant_id}:{agent_id}"] = 0
-                def _bg_checkpoint():
-                    try:
-                        runtime.snapshot(label=f"auto-{int(time.time())}")
-                    except Exception as bg_e:
-                        logger.warning("auto-snapshot failed | tenant=%s agent=%s: %s",
-                                       tenant_id, agent_id, bg_e)
-                        _capture_silent(bg_e, op="auto_snapshot",
-                                        tenant_id=tenant_id, agent_id=agent_id)
-                _bg_work_pool.submit(_bg_checkpoint)
-        except Exception as e:
-            logger.warning("auto-checkpoint scheduler failed | tenant=%s agent=%s: %s",
-                           tenant_id, agent_id, e)
-            _capture_silent(e, op="auto_checkpoint_schedule",
-                            tenant_id=tenant_id, agent_id=agent_id)
+    # Auto-checkpoint: save a snapshot every N writes (non-blocking)
+    try:
+        if _should_auto_snapshot(tenant_id, agent_id):
+            def _bg_checkpoint():
+                try:
+                    runtime.snapshot(label=f"auto-{int(time.time())}")
+                except Exception as bg_e:
+                    logger.warning("auto-snapshot failed | tenant=%s agent=%s: %s",
+                                   tenant_id, agent_id, bg_e)
+                    _capture_silent(bg_e, op="auto_snapshot",
+                                    tenant_id=tenant_id, agent_id=agent_id)
+            _bg_work_pool.submit(_bg_checkpoint)
+    except Exception as e:
+        logger.warning("auto-checkpoint scheduler failed | tenant=%s agent=%s: %s",
+                       tenant_id, agent_id, e)
+        _capture_silent(e, op="auto_checkpoint_schedule",
+                        tenant_id=tenant_id, agent_id=agent_id)
 
     # Brain Intelligence — fire-and-forget on bounded pool (v3.1.3 p99 fix)
     # Previously ran synchronously on request path, adding 100-500ms+ p99 spikes.
