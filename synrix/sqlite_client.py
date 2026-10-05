@@ -553,6 +553,27 @@ class SynrixSQLiteClient:
                 logger.warning(f"SQLite write failed: {e}")
                 return None
 
+    def list_names(
+        self,
+        prefix: str,
+        contains: Optional[str] = None,
+        collection: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Names + updated_at of current nodes under a prefix, newest first, without loading data."""
+        if collection is None:
+            collection = "nodes"
+        escaped = prefix.replace("%", "\\%").replace("_", "\\_")
+        sql = """SELECT name, updated_at FROM nodes
+                 WHERE collection = ? AND name LIKE ? ESCAPE '\\'
+                   AND (valid_until IS NULL OR valid_until = 0)"""
+        params: list = [collection, escaped + "%"]
+        if contains:
+            sql += " AND instr(name, ?) > 0"
+            params.append(contains)
+        with self._conn() as conn:
+            rows = conn.execute(sql + " ORDER BY updated_at DESC", params).fetchall()
+        return [{"name": row["name"], "updated_at": row["updated_at"]} for row in rows]
+
     def query_prefix(
         self,
         prefix: str,

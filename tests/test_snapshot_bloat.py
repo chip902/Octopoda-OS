@@ -65,3 +65,57 @@ class TestSnapshotKeysSkipFts:
     def test_memory_key_is_still_indexed(self, sqlite_client):
         sqlite_client.add_node("agents:marvin:memories:note", data='{"value": "needle"}')
         assert _fts_rows(sqlite_client, "agents:marvin:memories:note") == 1
+
+
+@pytest.fixture
+def gc_backend(tmp_dir, monkeypatch):
+    monkeypatch.setenv("SYNRIX_BACKEND", "sqlite")
+    monkeypatch.setenv("SYNRIX_DATA_DIR", tmp_dir)
+    from synrix.agent_backend import get_synrix_backend
+    backend = get_synrix_backend(backend="sqlite", sqlite_path=f"{tmp_dir}/gc.db")
+    yield backend
+    backend.close()
+
+
+def _bulk_rows(backend, names, updated_at):
+    # Straight SQL so 20K filler rows take milliseconds instead of a full write path each
+    conn = backend.client._get_conn()
+    try:
+        conn.executemany(
+            "INSERT INTO nodes (collection, name, data, created_at, updated_at) VALUES (?, ?, '{}', ?, ?)",
+            [(backend.collection, n, updated_at, updated_at) for n in names],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _snapshot_keys(backend, agent_id):
+    return {r["key"] for r in backend.query_prefix(f"agents:{agent_id}:snapshots:", limit=100)}
+
+
+class TestGcSnapshotPruning:
+    def _gc(self, backend, keep=10):
+        from synrix_runtime.core.gc import GCConfig, GarbageCollector
+        config = GCConfig(metrics_days=0, events_days=0, alerts_days=0, audit_days=0, max_snapshots_per_agent=keep)
+        return GarbageCollector(backend, config)
+
+    def test_prunes_old_snapshots_hidden_behind_newer_rows(self, gc_backend):
+        now = __import__("time").time()
+        for i in range(15):
+            gc_backend.write(f"agents:agentX:snapshots:auto-{i}", {"value": {"created_at": now - (15 - i) * 60}})
+        # Newer rows than every snapshot, more than the old 20,000-row scan window
+        _bulk_rows(gc_backend, [f"agents:agentX:memories:m{i}" for i in range(20_100)], now + 1000)
+
+        stats = self._gc(gc_backend).run_gc()
+
+        assert stats["snapshots_pruned"] == 5
+        assert _snapshot_keys(gc_backend, "agentX") == {f"agents:agentX:snapshots:auto-{i}" for i in range(5, 15)}
+
+    def test_keeps_newest_per_agent(self, gc_backend):
+        now = __import__("time").time()
+        for agent in ("a1", "a2"):
+            for i in range(4):
+                gc_backend.write(f"agents:{agent}:snapshots:s{i}", {"value": {"created_at": now - (4 - i) * 60}})
+        assert self._gc(gc_backend, keep=2).run_gc()["snapshots_pruned"] == 4
+        assert _snapshot_keys(gc_backend, "a1") == {"agents:a1:snapshots:s2", "agents:a1:snapshots:s3"}

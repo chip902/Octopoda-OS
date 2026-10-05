@@ -634,6 +634,27 @@ class SynrixAgentBackend:
         except Exception:
             return []
 
+    def list_keys(self, prefix: str, contains: Optional[str] = None,
+                  fallback_limit: int = 20000) -> List[Dict[str, Any]]:
+        """Keys + updated_at under a prefix, newest first.  SQLite reads names only; other
+        clients fall back to a capped query_prefix scan with created_at from the data."""
+        if hasattr(self.client, "list_names"):
+            try:
+                return [{"key": r["name"], "updated_at": r["updated_at"]}
+                        for r in self.client.list_names(prefix, contains=contains, collection=self.collection)]
+            except Exception as e:
+                logger.warning(f"list_keys failed ({self.backend_type}): {e}")
+                return []
+        keys = []
+        for r in self.query_prefix(prefix, limit=fallback_limit):
+            key = r.get("key", "")
+            if contains and contains not in key:
+                continue
+            data = r.get("data", {})
+            val = data.get("value", data) if isinstance(data, dict) else {}
+            keys.append({"key": key, "updated_at": val.get("created_at", 0) if isinstance(val, dict) else 0})
+        return keys
+
     def delete(self, key: str) -> bool:
         """Delete a key from storage. Returns True if deleted."""
         if hasattr(self.client, 'delete_node'):
